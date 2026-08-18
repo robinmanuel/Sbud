@@ -57,9 +57,9 @@ async def root():
 @app.post("/chat", response_model=ChatResponse, tags=["Chat"])
 async def chat(request: ChatRequest):
     """
-    Sends the student's message to the Gemini AI model and returns the response.
+    Sends the conversation history (including the latest message) to the Gemini AI model and returns the response.
     
-    - **message**: The student's text input (must be a non-empty string).
+    - **messages**: List of previous chat messages along with the new user message.
     """
     global model
     
@@ -77,8 +77,18 @@ async def chat(request: ChatRequest):
              )
         
     try:
+        # Format conversation history for Gemini API
+        # Gemini expects roles to be 'user' and 'model' (mapping 'assistant' -> 'model')
+        contents = [
+            {
+                "role": "user" if msg.role == "user" else "model",
+                "parts": [msg.content]
+            }
+            for msg in request.messages
+        ]
+        
         # Call the Gemini API asynchronously
-        response = await model.generate_content_async(request.message)
+        response = await model.generate_content_async(contents)
         
         # Verify response text is present
         if not response.text:
