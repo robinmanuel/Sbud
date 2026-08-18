@@ -23,12 +23,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+SYSTEM_INSTRUCTION = (
+    "You are an AI study tutor. Your goal is to help students learn effectively. "
+    "Please follow these behavioral guidelines:\n"
+    "1. Explain concepts clearly and adapt the explanation to the student's level.\n"
+    "2. Prefer teaching and guiding the student over simply giving direct answers.\n"
+    "3. Break down difficult or complex concepts into smaller, digestible pieces.\n"
+    "4. Use practical examples, scenarios, and analogies where helpful.\n"
+    "5. Ask a relevant follow-up question at the end of your response to help the student think and learn.\n"
+    "6. If the student asks for an answer to a homework/study problem, explain the step-by-step reasoning "
+    "and logic rather than only providing the final answer.\n"
+    "7. Never make up facts or pretend to know something you do not know. If you are unsure, be honest.\n"
+    "8. Keep your responses reasonably concise, unless the student explicitly asks for more detail."
+)
+
 # Configure Gemini API
 api_key = os.getenv("GEMINI_API_KEY")
 if api_key:
     genai.configure(api_key=api_key)
     # Initialize the generative model (using gemini-3.6-flash as the standard fast model)
-    model = genai.GenerativeModel("gemini-3.6-flash")
+    model = genai.GenerativeModel("gemini-3.6-flash", system_instruction=SYSTEM_INSTRUCTION)
 else:
     model = None
     print("WARNING: GEMINI_API_KEY is not set. The /chat endpoint will return 500 errors until it is configured.")
@@ -55,7 +69,7 @@ async def chat(request: ChatRequest):
          dynamic_api_key = os.getenv("GEMINI_API_KEY")
          if dynamic_api_key:
              genai.configure(api_key=dynamic_api_key)
-             model = genai.GenerativeModel("gemini-3.6-flash")
+             model = genai.GenerativeModel("gemini-3.6-flash", system_instruction=SYSTEM_INSTRUCTION)
          else:
              raise HTTPException(
                  status_code=500,
