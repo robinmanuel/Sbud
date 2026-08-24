@@ -1,6 +1,9 @@
 import os
+from typing import List
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends, Response
+from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File
+import pypdf
+import io
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -203,6 +206,15 @@ async def chat(
                     content=msg.content
                 )
                 db.add(db_msg)
+            
+            # Automatically set conversation title based on first message
+            first_user_msg = next((m for m in request.messages if m.role == "user"), None)
+            if first_user_msg:
+                title_snippet = first_user_msg.content.strip().split("\n")[0]
+                if len(title_snippet) > 30:
+                    title_snippet = title_snippet[:27] + "..."
+                db_conv.title = title_snippet or "New Chat"
+
             db.commit()
 
         # Retrieve the complete conversation history from database to build history for Gemini
@@ -266,6 +278,30 @@ def create_conversation(db: Session = Depends(get_db), current_user: models.User
     db.refresh(db_conv)
     return db_conv
 
+@app.get("/conversations", response_model=List[schemas.ConversationResponse], tags=["Conversations"])
+def list_conversations(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    """
+    Retrieves all conversations belonging to the currently authenticated user.
+    """
+    return db.query(models.Conversation).filter(
+        models.Conversation.user_id == current_user.id
+    ).order_by(models.Conversation.created_at.desc()).all()
+
+@app.delete("/conversations/{conversation_id}", tags=["Conversations"])
+def delete_conversation(conversation_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
+    """
+    Deletes a specific conversation, verifying owner authorization.
+    """
+    db_conv = db.query(models.Conversation).filter(
+        models.Conversation.id == conversation_id,
+        models.Conversation.user_id == current_user.id
+    ).first()
+    if not db_conv:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    db.delete(db_conv)
+    db.commit()
+    return {"message": "Conversation deleted successfully"}
+
 @app.get("/conversations/{conversation_id}", response_model=schemas.ConversationDetailResponse, tags=["Conversations"])
 def get_conversation(conversation_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     """
@@ -308,6 +344,14 @@ async def create_message(
         content=request.content
     )
     db.add(user_msg)
+    
+    # Automatically set conversation title based on first message
+    if db_conv.title == "New Chat":
+        title_snippet = request.content.strip().split("\n")[0]
+        if len(title_snippet) > 30:
+            title_snippet = title_snippet[:27] + "..."
+        db_conv.title = title_snippet or "New Chat"
+        
     db.commit()
     db.refresh(user_msg)
 
@@ -366,3 +410,96 @@ async def create_message(
             status_code=502,
             detail=f"AI model API failure: {str(e)}"
         )
+
+
+# =====================================================================
+# Document Management Endpoints (Study Materials)
+# =====================================================================
+
+@app.post("/documents", response_model=schemas.DocumentResponse, status_code=201, tags=["Documents"])
+async def upload_document(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Accepts a PDF upload, validates its size and type, extracts its text,
+    and stores its metadata and extracted content in the database.
+    """
+    # 1. Validate File MIME Type
+    if file.content_type != "application/pdf":
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid file type. Only PDF documents are supported."
+        )
+
+    # 2. Validate File Size (Limit: 10MB)
+    max_size = 10 * 1024 * 1024  # 10 Megabytes
+    file_content = await file.read()
+    file_size = len(file_content)
+    if file_size > max_size:
+        raise HTTPException(
+            status_code=400,
+            detail="File size exceeds the 10MB limit."
+        )
+
+    # 3. Extract Text from PDF using pypdf
+    try:
+        pdf_stream = io.BytesIO(file_content)
+        reader = pypdf.PdfReader(pdf_stream)
+        extracted_parts = []
+        for page in reader.pages:
+            text = page.extract_text()
+            if text:
+                extracted_parts.append(text)
+        extracted_text = "\n".join(extracted_parts)
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to parse PDF document: {str(e)}"
+        )
+
+    # 4. Save to Database
+    db_doc = models.Document(
+        user_id=current_user.id,
+        filename=file.filename,
+        file_type=file.content_type,
+        file_size=file_size,
+        extracted_text=extracted_text
+    )
+    db.add(db_doc)
+    db.commit()
+    db.refresh(db_doc)
+    return db_doc
+
+@app.get("/documents", response_model=List[schemas.DocumentResponse], tags=["Documents"])
+def list_documents(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Lists all documents uploaded by the authenticated user.
+    """
+    return db.query(models.Document).filter(
+        models.Document.user_id == current_user.id
+    ).order_by(models.Document.created_at.desc()).all()
+
+@app.delete("/documents/{document_id}", tags=["Documents"])
+def delete_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Deletes a specific uploaded document, verifying owner authorization.
+    """
+    db_doc = db.query(models.Document).filter(
+        models.Document.id == document_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    if not db_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    
+    db.delete(db_doc)
+    db.commit()
+    return {"message": "Document deleted successfully"}

@@ -21,6 +21,13 @@ class User(Base):
         cascade="all, delete-orphan"
     )
 
+    # One-to-many relationship with Document
+    documents = relationship(
+        "Document",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+
 class Conversation(Base):
     """
     SQLAlchemy model representing a chat conversation.
@@ -33,6 +40,7 @@ class Conversation(Base):
         ForeignKey("users.id", ondelete="CASCADE"), 
         nullable=False
     )
+    title = Column(String, server_default="New Chat", default="New Chat", nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     # Reference back to the parent user
@@ -64,3 +72,25 @@ class Message(Base):
 
     # Reference back to the parent conversation
     conversation = relationship("Conversation", back_populates="messages")
+
+
+class Document(Base):
+    """
+    SQLAlchemy model representing an uploaded study material document.
+    """
+    __tablename__ = "documents"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer, 
+        ForeignKey("users.id", ondelete="CASCADE"), 
+        nullable=False
+    )
+    filename = Column(String, nullable=False)
+    file_type = Column(String, nullable=False)
+    file_size = Column(Integer, nullable=False)
+    extracted_text = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Reference back to parent user
+    user = relationship("User", back_populates="documents")

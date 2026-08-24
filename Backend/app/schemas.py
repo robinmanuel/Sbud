@@ -34,6 +34,7 @@ class MessageResponse(BaseModel):
 class ConversationCreateResponse(BaseModel):
     id: int
     user_id: int
+    title: str
     created_at: datetime
 
     model_config = {
@@ -43,8 +44,19 @@ class ConversationCreateResponse(BaseModel):
 class ConversationDetailResponse(BaseModel):
     id: int
     user_id: int
+    title: str
     created_at: datetime
     messages: List[MessageResponse]
+
+    model_config = {
+        "from_attributes": True
+    }
+
+class ConversationResponse(BaseModel):
+    id: int
+    user_id: int
+    title: str
+    created_at: datetime
 
     model_config = {
         "from_attributes": True
@@ -67,3 +79,28 @@ class UserResponse(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+class DocumentResponse(BaseModel):
+    id: int
+    user_id: int
+    filename: str
+    file_type: str
+    file_size: int
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
+
+class DocumentDetailResponse(BaseModel):
+    id: int
+    user_id: int
+    filename: str
+    file_type: str
+    file_size: int
+    extracted_text: Optional[str]
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
