@@ -34,6 +34,13 @@ class User(Base):
         cascade="all, delete-orphan"
     )
 
+    # One-to-many relationship with Quiz
+    quizzes = relationship(
+        "Quiz",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+
 class Conversation(Base):
     """
     SQLAlchemy model representing a chat conversation.
@@ -108,6 +115,13 @@ class Document(Base):
         cascade="all, delete-orphan"
     )
 
+    # One-to-many relationship with Quiz
+    quizzes = relationship(
+        "Quiz",
+        back_populates="document",
+        cascade="all, delete-orphan"
+    )
+
 
 class DocumentChunk(Base):
     """
@@ -130,3 +144,54 @@ class DocumentChunk(Base):
 
     # Reference back to parent document
     document = relationship("Document", back_populates="chunks")
+
+
+class Quiz(Base):
+    """
+    SQLAlchemy model representing a generated study quiz.
+    """
+    __tablename__ = "quizzes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    document_id = Column(
+        Integer,
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    title = Column(String, nullable=False)
+    score = Column(Integer, nullable=True) # None until submitted/graded
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Reference parent models
+    user = relationship("User", back_populates="quizzes")
+    document = relationship("Document", back_populates="quizzes")
+    
+    # Child relationship
+    questions = relationship("QuizQuestion", back_populates="quiz", cascade="all, delete-orphan")
+
+
+class QuizQuestion(Base):
+    """
+    SQLAlchemy model representing a question inside a quiz.
+    """
+    __tablename__ = "quiz_questions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    quiz_id = Column(
+        Integer,
+        ForeignKey("quizzes.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    question_text = Column(Text, nullable=False)
+    options = Column(Text, nullable=False) # JSON-serialized list of choices
+    correct_answer = Column(String, nullable=False) # "A", "B", "C", "D"
+    explanation = Column(Text, nullable=False)
+    student_answer = Column(String, nullable=True) # Selected option, populated on submit
+
+    # Parent relationship
+    quiz = relationship("Quiz", back_populates="questions")

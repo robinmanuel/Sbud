@@ -701,3 +701,401 @@
   color: var(--danger);
   background-color: rgba(239, 68, 68, 0.08);
 }
+
+/* Document Quiz Controls placement */
+.docControls {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.docQuizBtn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: none;
+  transition: color 0.15s, background-color 0.15s;
+}
+
+.docItem:hover .docQuizBtn {
+  display: block;
+}
+
+.docQuizBtn:hover {
+  color: var(--accent-indigo);
+  background-color: rgba(99, 102, 241, 0.08);
+}
+
+.quizIconMini {
+  width: 15px;
+  height: 15px;
+}
+
+/* Quiz UI layout container */
+.quizLoadingContainer {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 3rem;
+  text-align: center;
+  gap: 1rem;
+}
+
+.quizLoadingContainer h2 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-top: 0.5rem;
+}
+
+.quizLoadingContainer p {
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  max-width: 450px;
+  line-height: 1.5;
+}
+
+.quizContentWrapper {
+  max-width: 680px;
+  width: 100%;
+  margin: 2rem auto;
+  padding: 0 1.5rem;
+}
+
+.quizCard, .quizResultCard {
+  background: var(--glass-bg);
+  border: 1px solid var(--glass-border);
+  backdrop-filter: var(--glass-blur);
+  border-radius: 20px;
+  padding: 2rem;
+  box-shadow: var(--shadow-lg);
+  animation: fadeIn 0.25s ease-out;
+}
+
+.quizProgression {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--accent-indigo);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+.progressBar {
+  height: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 3px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.progressBarFill {
+  height: 100%;
+  background: var(--accent-gradient);
+  transition: width 0.3s ease-out;
+}
+
+.quizQuestionText {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.4;
+  margin-bottom: 2rem;
+}
+
+.optionsList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin-bottom: 2rem;
+}
+
+.optionCard {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 1rem 1.25rem;
+  border-radius: 14px;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.01);
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, transform 0.1s;
+}
+
+.optionCard:hover {
+  background: rgba(255, 255, 255, 0.03);
+  border-color: rgba(255, 255, 255, 0.12);
+  transform: translateY(-1px);
+}
+
+.optionCardSelected {
+  background: rgba(99, 102, 241, 0.08) !important;
+  border-color: var(--accent-indigo) !important;
+  box-shadow: 0 0 12px rgba(99, 102, 241, 0.15);
+}
+
+.optionRadioBubble {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  transition: border-color 0.15s;
+}
+
+.optionCardSelected .optionRadioBubble {
+  border-color: var(--accent-indigo);
+}
+
+.optionRadioBubbleInner {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-indigo);
+}
+
+.optionText {
+  font-size: 0.95rem;
+  font-weight: 500;
+  color: var(--text-primary);
+  line-height: 1.4;
+}
+
+.quizControlsRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-top: 1px solid var(--border-light);
+  padding-top: 1.5rem;
+}
+
+.quitQuizBtn {
+  background: transparent;
+  border: 1px solid var(--border-light);
+  color: var(--text-secondary);
+  padding: 0.65rem 1.25rem;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+
+.quitQuizBtn:hover {
+  background: rgba(239, 68, 68, 0.05);
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.15);
+}
+
+.nextQuizBtn, .submitQuizBtn {
+  background: var(--accent-gradient);
+  color: white;
+  border: none;
+  padding: 0.65rem 1.75rem;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 0.88rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.15s, transform 0.1s;
+}
+
+.nextQuizBtn:hover:not(:disabled), .submitQuizBtn:hover:not(:disabled) {
+  background: var(--accent-gradient-hover);
+  transform: translateY(-1px);
+}
+
+.nextQuizBtn:disabled, .submitQuizBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Quiz Grading Result Sheet */
+.scoreBanner {
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.2);
+  border-radius: 16px;
+  padding: 1.5rem;
+  text-align: center;
+  margin-bottom: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.scoreTitle {
+  font-size: 1.75rem;
+  font-weight: 800;
+  color: var(--text-primary);
+  background: var(--accent-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.scoreFeedback {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.gradedQuestionsList {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  margin-bottom: 2.5rem;
+}
+
+.gradedQuestionItem {
+  border-bottom: 1px solid var(--border-light);
+  padding-bottom: 2rem;
+}
+
+.gradedQuestionItem:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.gradedQuestionHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.gradedQuestionNumber {
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.badgeCorrect {
+  background: rgba(16, 185, 129, 0.08);
+  border: 1px solid rgba(16, 185, 129, 0.15);
+  color: #a7f3d0;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.25rem 0.65rem;
+  border-radius: 20px;
+  text-transform: uppercase;
+}
+
+.badgeIncorrect {
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 0.25rem 0.65rem;
+  border-radius: 20px;
+  text-transform: uppercase;
+}
+
+.gradedQuestionText {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.4;
+  margin-bottom: 1.25rem;
+}
+
+.optionsListDisabled {
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+  margin-bottom: 1.25rem;
+  pointer-events: none; /* read-only */
+}
+
+.optionCardDisabled {
+  display: flex;
+  align-items: center;
+  padding: 0.85rem 1.15rem;
+  border-radius: 10px;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.01);
+  opacity: 0.65;
+}
+
+.optionCardCorrect {
+  display: flex;
+  align-items: center;
+  padding: 0.85rem 1.15rem;
+  border-radius: 10px;
+  border: 1.5px solid #10b981;
+  background: rgba(16, 185, 129, 0.08);
+}
+
+.optionCardIncorrect {
+  display: flex;
+  align-items: center;
+  padding: 0.85rem 1.15rem;
+  border-radius: 10px;
+  border: 1.5px solid #ef4444;
+  background: rgba(239, 68, 68, 0.08);
+}
+
+.optionCardCorrectHighlight {
+  display: flex;
+  align-items: center;
+  padding: 0.85rem 1.15rem;
+  border-radius: 10px;
+  border: 1.5px dashed #10b981;
+  background: rgba(16, 185, 129, 0.03);
+}
+
+.explanationBox {
+  background: rgba(245, 158, 11, 0.05);
+  border: 1px solid rgba(245, 158, 11, 0.15);
+  border-radius: 12px;
+  padding: 1rem 1.25rem;
+}
+
+.explanationTitle {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: var(--accent-orange);
+  margin-bottom: 0.25rem;
+}
+
+.explanationText {
+  font-size: 0.88rem;
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0;
+}
+
+.backToChatBtn {
+  display: block;
+  width: 100%;
+  text-align: center;
+  background: var(--accent-gradient);
+  color: white;
+  border: none;
+  padding: 0.85rem;
+  border-radius: 12px;
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background-color 0.15s, transform 0.1s;
+}
+
+.backToChatBtn:hover {
+  background: var(--accent-gradient-hover);
+  transform: translateY(-1px);
+}
+

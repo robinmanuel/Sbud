@@ -22,6 +22,40 @@ interface StudyDocument {
   created_at: string;
 }
 
+interface QuizQuestion {
+  id: number;
+  question_text: string;
+  options: string[];
+}
+
+interface Quiz {
+  id: number;
+  document_id: number;
+  title: string;
+  created_at: string;
+  questions: QuizQuestion[];
+}
+
+interface GradedQuestion {
+  id: number;
+  question_text: string;
+  options: string[];
+  student_answer: string | null;
+  correct_answer: string;
+  explanation: string;
+  is_correct: boolean;
+}
+
+interface QuizResult {
+  id: number;
+  document_id: number;
+  title: string;
+  score: number;
+  total_questions: number;
+  created_at: string;
+  questions: GradedQuestion[];
+}
+
 const INITIAL_MESSAGES: MessageProps[] = [
   {
     role: "assistant",
@@ -49,6 +83,14 @@ export const Chat: React.FC = () => {
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
+
+  // Quiz State
+  const [activeQuiz, setActiveQuiz] = useState<Quiz | null>(null);
+  const [isGeneratingQuiz, setIsGeneratingQuiz] = useState(false);
+  const [quizAnswers, setQuizAnswers] = useState<Record<number, string>>({});
+  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
+  const [isSubmittingQuiz, setIsSubmittingQuiz] = useState(false);
+  const [quizResult, setQuizResult] = useState<QuizResult | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -164,6 +206,7 @@ export const Chat: React.FC = () => {
   // Handle selecting a conversation from sidebar
   const handleSelectConversation = async (convId: number) => {
     if (isLoading || activeConversationId === convId) return;
+    setActiveQuiz(null); // Return to chat view
     setActiveConversationId(convId);
     await loadConversationMessages(convId);
   };
@@ -171,6 +214,7 @@ export const Chat: React.FC = () => {
   // Start a new conversation
   const handleNewChat = async () => {
     setError(null);
+    setActiveQuiz(null); // Return to chat view
     try {
       const resp = await fetch(`${API_BASE}/conversations`, {
         method: "POST",
@@ -271,7 +315,6 @@ export const Chat: React.FC = () => {
       setUploadError(err.message || "Network failure during upload.");
     } finally {
       setIsUploading(false);
-      // Clear file input value to allow uploading same file again if needed
       e.target.value = "";
     }
   };
@@ -298,6 +341,79 @@ export const Chat: React.FC = () => {
       setUploadSuccess("Material deleted successfully.");
     } catch (err: any) {
       setUploadError(err.message || "Failed to delete study material.");
+    }
+  };
+
+  // Generate study quiz
+  const handleGenerateQuiz = async (docId: number) => {
+    setIsGeneratingQuiz(true);
+    setUploadError(null);
+    setUploadSuccess(null);
+    setActiveQuiz(null);
+    try {
+      const resp = await fetch(`${API_BASE}/quizzes`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({ document_id: docId }),
+      });
+
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.detail || "Failed to generate quiz from study guide.");
+      }
+
+      const data = await resp.json();
+      setActiveQuiz(data);
+      setQuizAnswers({});
+      setCurrentQuestionIndex(0);
+      setQuizResult(null);
+    } catch (err: any) {
+      setUploadError(err.message || "Failed to generate quiz.");
+    } finally {
+      setIsGeneratingQuiz(false);
+    }
+  };
+
+  // Handle quiz MCQ selection
+  const handleSelectQuizOption = (questionId: number, optionLetter: string) => {
+    setQuizAnswers((prev) => ({
+      ...prev,
+      [questionId]: optionLetter,
+    }));
+  };
+
+  // Submit quiz for deterministic grading
+  const handleSubmitQuiz = async () => {
+    if (!activeQuiz) return;
+    setIsSubmittingQuiz(true);
+    try {
+      const stringifiedAnswers: Record<string, string> = {};
+      Object.entries(quizAnswers).forEach(([qid, ans]) => {
+        stringifiedAnswers[qid] = ans;
+      });
+
+      const resp = await fetch(`${API_BASE}/quizzes/${activeQuiz.id}/submit`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        credentials: "include",
+        body: JSON.stringify({ answers: stringifiedAnswers }),
+      });
+
+      if (!resp.ok) {
+        throw new Error("Failed to grade the quiz.");
+      }
+
+      const result = await resp.json();
+      setQuizResult(result);
+    } catch (e: any) {
+      alert(e.message || "Quiz submission failed.");
+    } finally {
+      setIsSubmittingQuiz(false);
     }
   };
 
@@ -444,7 +560,7 @@ export const Chat: React.FC = () => {
               {conversations.map((conv) => (
                 <div 
                   key={conv.id} 
-                  className={`${styles.convItem} ${activeConversationId === conv.id ? styles.convItemActive : ""}`}
+                  className={`${styles.convItem} ${activeConversationId === conv.id && !activeQuiz ? styles.convItemActive : ""}`}
                   onClick={() => handleSelectConversation(conv.id)}
                 >
                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={styles.chatBubbleIcon}>
@@ -482,7 +598,7 @@ export const Chat: React.FC = () => {
             <button 
               className={styles.uploadButton} 
               onClick={triggerFileInput}
-              disabled={isUploading}
+              disabled={isUploading || isGeneratingQuiz}
               title="Upload PDF Document"
             >
               {isUploading ? (
@@ -520,15 +636,29 @@ export const Chat: React.FC = () => {
                       <span className={styles.docName}>{doc.filename}</span>
                       <span className={styles.docSize}>{formatBytes(doc.file_size)}</span>
                     </div>
-                    <button 
-                      className={styles.deleteDocBtn}
-                      onClick={(e) => handleDeleteDocument(e, doc.id)}
-                      title="Delete Study Material"
-                    >
-                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={styles.trashIcon}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
-                      </svg>
-                    </button>
+
+                    {/* Generate Quiz & Delete Controls */}
+                    <div className={styles.docControls}>
+                      <button 
+                        className={styles.docQuizBtn}
+                        onClick={() => handleGenerateQuiz(doc.id)}
+                        disabled={isGeneratingQuiz || isUploading}
+                        title="Generate Quiz from this PDF"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={styles.quizIconMini}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.03 0 1.9.693 2.166 1.638m-7.377 2.24a.75.75 0 0 1 1.03.31l1.53 2.548a.75.75 0 0 1-.31 1.03l-1.53.918a.75.75 0 0 1-1.03-.31l-1.53-2.548a.75.75 0 0 1 .31-1.03l1.53-.918Z" />
+                        </svg>
+                      </button>
+                      <button 
+                        className={styles.deleteDocBtn}
+                        onClick={(e) => handleDeleteDocument(e, doc.id)}
+                        title="Delete Study Material"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={styles.trashIcon}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
+                        </svg>
+                      </button>
+                    </div>
                   </div>
                 ))
               )}
@@ -556,80 +686,227 @@ export const Chat: React.FC = () => {
         </div>
       </aside>
 
-      {/* Main Chat Container */}
-      <div className={styles.chatWrapper}>
-        {/* Toggle Sidebar Button (Mobile) */}
-        <header className={styles.header}>
-          <button 
-            className={styles.sidebarToggle} 
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            aria-label="Toggle sidebar"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={styles.toggleIcon}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />
-            </svg>
-          </button>
-
-          <div className={styles.headerTitleContainer}>
-            <span className={styles.activeTitle}>
-              {conversations.find((c) => c.id === activeConversationId)?.title || "Chat session"}
-            </span>
+      {/* Main Container - Quiz runner OR Chat Interface */}
+      {isGeneratingQuiz ? (
+        <div className={styles.chatWrapper}>
+          <div className={styles.quizLoadingContainer}>
+            <div className={styles.spinner} />
+            <h2>Creating Study Quiz...</h2>
+            <p>SBud is extracting concepts and composing multiple-choice questions for you.</p>
           </div>
-        </header>
+        </div>
+      ) : activeQuiz ? (
+        // Quiz View
+        <div className={styles.chatWrapper}>
+          <header className={styles.header}>
+            <span className={styles.activeTitle}>{activeQuiz.title}</span>
+          </header>
 
-        {/* Messages Scroll Area */}
-        <main className={styles.chatArea}>
-          {isInitializing ? (
-            <div className={styles.initializingContainer}>
-              <div className={styles.spinner} />
-              <p>Initializing SBud secure tutor connection...</p>
-            </div>
-          ) : (
-            <div className={styles.messagesList}>
-              {messages.map((msg, index) => (
-                <Message key={index} role={msg.role} content={msg.content} createdAt={msg.createdAt} />
-              ))}
-              
-              {/* Loading Typing Indicator */}
-              {isLoading && (
-                <div className={styles.typingIndicatorContainer}>
-                  <div className={styles.avatarMini}>SB</div>
-                  <div className={styles.typingBubble}>
-                    <span></span>
-                    <span></span>
-                    <span></span>
+          <main className={styles.chatArea}>
+            <div className={styles.quizContentWrapper}>
+              {quizResult === null ? (
+                // 1. Quiz Taking runner
+                <div className={styles.quizCard}>
+                  <div className={styles.quizProgression}>
+                    Question {currentQuestionIndex + 1} of {activeQuiz.questions.length}
+                    <div className={styles.progressBar}>
+                      <div 
+                        className={styles.progressBarFill} 
+                        style={{ width: `${((currentQuestionIndex + 1) / activeQuiz.questions.length) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  <h2 className={styles.quizQuestionText}>
+                    {activeQuiz.questions[currentQuestionIndex].question_text}
+                  </h2>
+
+                  <div className={styles.optionsList}>
+                    {activeQuiz.questions[currentQuestionIndex].options.map((option, idx) => {
+                      const letter = option.substring(0, 1).toUpperCase(); // "A", "B", etc.
+                      const isSelected = quizAnswers[activeQuiz.questions[currentQuestionIndex].id] === letter;
+                      return (
+                        <div 
+                          key={idx} 
+                          className={`${styles.optionCard} ${isSelected ? styles.optionCardSelected : ""}`}
+                          onClick={() => handleSelectQuizOption(activeQuiz.questions[currentQuestionIndex].id, letter)}
+                        >
+                          <div className={styles.optionRadioBubble}>
+                            {isSelected && <div className={styles.optionRadioBubbleInner} />}
+                          </div>
+                          <span className={styles.optionText}>{option}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className={styles.quizControlsRow}>
+                    <button 
+                      className={styles.quitQuizBtn} 
+                      onClick={() => setActiveQuiz(null)}
+                    >
+                      Quit Quiz
+                    </button>
+
+                    {currentQuestionIndex < activeQuiz.questions.length - 1 ? (
+                      <button 
+                        className={styles.nextQuizBtn}
+                        disabled={!quizAnswers[activeQuiz.questions[currentQuestionIndex].id]}
+                        onClick={() => setCurrentQuestionIndex(currentQuestionIndex + 1)}
+                      >
+                        Next
+                      </button>
+                    ) : (
+                      <button 
+                        className={styles.submitQuizBtn}
+                        disabled={!quizAnswers[activeQuiz.questions[currentQuestionIndex].id] || isSubmittingQuiz}
+                        onClick={handleSubmitQuiz}
+                      >
+                        {isSubmittingQuiz ? "Grading..." : "Submit Quiz"}
+                      </button>
+                    )}
                   </div>
                 </div>
-              )}
-
-              {/* Error Banner */}
-              {error && (
-                <div className={styles.errorBanner}>
-                  <div className={styles.errorContent}>
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={styles.errorIcon}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
-                    </svg>
-                    <span>{error}</span>
+              ) : (
+                // 2. Graded Results Review Screen
+                <div className={styles.quizResultCard}>
+                  <div className={styles.scoreBanner}>
+                    <div className={styles.scoreTitle}>
+                      Score: {quizResult.score} / {quizResult.total_questions}
+                    </div>
+                    <div className={styles.scoreFeedback}>
+                      {quizResult.score >= 4 ? "Great job! Mastered this chapter!" : "Keep studying and try again!"}
+                    </div>
                   </div>
-                  <button className={styles.retryButton} onClick={handleRetry}>Retry</button>
+
+                  <div className={styles.gradedQuestionsList}>
+                    {quizResult.questions.map((q, idx) => (
+                      <div key={q.id} className={styles.gradedQuestionItem}>
+                        <div className={styles.gradedQuestionHeader}>
+                          <span className={styles.gradedQuestionNumber}>Question {idx + 1}</span>
+                          <span className={q.is_correct ? styles.badgeCorrect : styles.badgeIncorrect}>
+                            {q.is_correct ? "Correct" : "Incorrect"}
+                          </span>
+                        </div>
+
+                        <h3 className={styles.gradedQuestionText}>{q.question_text}</h3>
+                        
+                        <div className={styles.optionsListDisabled}>
+                          {q.options.map((option, oIdx) => {
+                            const letter = option.substring(0, 1).toUpperCase();
+                            const isSelected = q.student_answer === letter;
+                            const isCorrect = q.correct_answer === letter;
+
+                            let optionClass = styles.optionCardDisabled;
+                            if (isSelected) {
+                              optionClass = q.is_correct ? styles.optionCardCorrect : styles.optionCardIncorrect;
+                            } else if (isCorrect) {
+                              optionClass = styles.optionCardCorrectHighlight;
+                            }
+
+                            return (
+                              <div key={oIdx} className={optionClass}>
+                                <span className={styles.optionText}>{option}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        <div className={styles.explanationBox}>
+                          <div className={styles.explanationTitle}>Explanation:</div>
+                          <p className={styles.explanationText}>{q.explanation}</p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <button 
+                    className={styles.backToChatBtn}
+                    onClick={() => setActiveQuiz(null)}
+                  >
+                    Back to Tutor Chat
+                  </button>
                 </div>
               )}
-
-              <div ref={messagesEndRef} />
             </div>
-          )}
-        </main>
+          </main>
+        </div>
+      ) : (
+        // Chat View
+        <div className={styles.chatWrapper}>
+          {/* Toggle Sidebar Button (Mobile) */}
+          <header className={styles.header}>
+            <button 
+              className={styles.sidebarToggle} 
+              onClick={() => setIsSidebarOpen(!isSidebarOpen)}
+              aria-label="Toggle sidebar"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={styles.toggleIcon}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />
+              </svg>
+            </button>
 
-        {/* Input Tray */}
-        <footer className={styles.footer}>
-          <div className={styles.inputWrapper}>
-            <ChatInput onSendMessage={handleSendMessage} disabled={isLoading || isInitializing} />
-          </div>
-          <p className={styles.footerNote}>
-            SBud is designed to guide your study. Tip: Ask it to break things down!
-          </p>
-        </footer>
-      </div>
+            <div className={styles.headerTitleContainer}>
+              <span className={styles.activeTitle}>
+                {conversations.find((c) => c.id === activeConversationId)?.title || "Chat session"}
+              </span>
+            </div>
+          </header>
+
+          {/* Messages Scroll Area */}
+          <main className={styles.chatArea}>
+            {isInitializing ? (
+              <div className={styles.initializingContainer}>
+                <div className={styles.spinner} />
+                <p>Initializing SBud secure tutor connection...</p>
+              </div>
+            ) : (
+              <div className={styles.messagesList}>
+                {messages.map((msg, index) => (
+                  <Message key={index} role={msg.role} content={msg.content} createdAt={msg.createdAt} />
+                ))}
+                
+                {/* Loading Typing Indicator */}
+                {isLoading && (
+                  <div className={styles.typingIndicatorContainer}>
+                    <div className={styles.avatarMini}>SB</div>
+                    <div className={styles.typingBubble}>
+                      <span></span>
+                      <span></span>
+                      <span></span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Error Banner */}
+                {error && (
+                  <div className={styles.errorBanner}>
+                    <div className={styles.errorContent}>
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={styles.errorIcon}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+                      </svg>
+                      <span>{error}</span>
+                    </div>
+                    <button className={styles.retryButton} onClick={handleRetry}>Retry</button>
+                  </div>
+                )}
+
+                <div ref={messagesEndRef} />
+              </div>
+            )}
+          </main>
+
+          {/* Input Tray */}
+          <footer className={styles.footer}>
+            <div className={styles.inputWrapper}>
+              <ChatInput onSendMessage={handleSendMessage} disabled={isLoading || isInitializing} />
+            </div>
+            <p className={styles.footerNote}>
+              SBud is designed to guide your study. Tip: Ask it to break things down!
+            </p>
+          </footer>
+        </div>
+      )}
     </div>
   );
 };

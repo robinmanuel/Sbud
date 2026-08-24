@@ -114,3 +114,47 @@ class ChunkSearchResponse(BaseModel):
     chunk_text: str
     page_number: Optional[int] = None
     similarity: float
+
+class QuizCreateRequest(BaseModel):
+    document_id: int
+
+class QuizQuestionResponse(BaseModel):
+    id: int
+    question_text: str
+    options: List[str]
+
+class QuizResponse(BaseModel):
+    id: int
+    document_id: int
+    title: str
+    created_at: datetime
+    questions: List[QuizQuestionResponse]
+
+    model_config = {
+        "from_attributes": True
+    }
+
+class QuizSubmitRequest(BaseModel):
+    answers: dict[str, str]
+
+class GradedQuestionResponse(BaseModel):
+    id: int
+    question_text: str
+    options: List[str]
+    student_answer: Optional[str]
+    correct_answer: str
+    explanation: str
+    is_correct: bool
+
+class QuizResultResponse(BaseModel):
+    id: int
+    document_id: int
+    title: str
+    score: int
+    total_questions: int
+    created_at: datetime
+    questions: List[GradedQuestionResponse]
+
+    model_config = {
+        "from_attributes": True
+    }

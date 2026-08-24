@@ -797,3 +797,229 @@ def search_document(
         ]
 
     return results
+
+
+# =====================================================================
+# Quiz Generation & Grading Endpoints
+# =====================================================================
+
+QUIZ_GENERATOR_INSTRUCTION = (
+    "You are an expert quiz generator. Your task is to generate a multiple-choice quiz of exactly 5 questions "
+    "based strictly on the provided study material. Each question must have exactly 4 options, a correct answer ('A', 'B', 'C', or 'D'), "
+    "and a brief explanation explaining the reasoning.\n"
+    "You must return a JSON array of objects conforming to the following structure:\n"
+    "[\n"
+    "  {\n"
+    "    \"question\": \"What is the primary function of chlorophyll?\",\n"
+    "    \"options\": [\n"
+    "      \"A. Absorbing water\",\n"
+    "      \"B. Absorbing light energy\",\n"
+    "      \"C. Releasing oxygen\",\n"
+    "      \"D. Transporting sugars\"\n"
+    "    ],\n"
+    "    \"correct_answer\": \"B\",\n"
+    "    \"explanation\": \"Chlorophyll absorbs light energy...\"\n"
+    "  }\n"
+    "]"
+)
+
+@app.post("/quizzes", response_model=schemas.QuizResponse, status_code=201, tags=["Quizzes"])
+async def generate_quiz(
+    request: schemas.QuizCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Retrieves document content, prompts Gemini to generate a 5-question multiple-choice quiz,
+    records it in the database, and returns the questions (without correct answers).
+    """
+    # 1. Verify document ownership
+    db_doc = db.query(models.Document).filter(
+        models.Document.id == request.document_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    if not db_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not db_doc.extracted_text or not db_doc.extracted_text.strip():
+        raise HTTPException(status_code=400, detail="Document has no text content to generate a quiz from.")
+
+    # 2. Configure Gemini for structured JSON generation
+    # Try loading or configuring Gemini
+    dynamic_api_key = os.getenv("GEMINI_API_KEY")
+    if not dynamic_api_key:
+        raise HTTPException(status_code=500, detail="Gemini API Key is not configured on the backend.")
+    
+    genai.configure(api_key=dynamic_api_key)
+    quiz_model = genai.GenerativeModel(
+        "gemini-3.6-flash",
+        system_instruction=QUIZ_GENERATOR_INSTRUCTION
+    )
+
+    try:
+        # 3. Call Gemini to generate quiz JSON array
+        prompt = (
+            f"[STUDY MATERIAL]\n{db_doc.extracted_text}\n\n"
+            "Generate a 5-question multiple-choice quiz based on this study material."
+        )
+        
+        response = await quiz_model.generate_content_async(
+            contents=[prompt],
+            generation_config={"response_mime_type": "application/json"}
+        )
+
+        if not response.text:
+            raise HTTPException(status_code=502, detail="Empty response received from the quiz generator.")
+
+        questions_data = json.loads(response.text)
+        if not isinstance(questions_data, list) or len(questions_data) == 0:
+            raise ValueError("Returned JSON is not a valid list of questions.")
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to generate quiz: {str(e)}"
+        )
+
+    # 4. Save Quiz parent to Database
+    db_quiz = models.Quiz(
+        user_id=current_user.id,
+        document_id=db_doc.id,
+        title=f"{db_doc.filename.rsplit('.', 1)[0]} Quiz",
+        score=None
+    )
+    db.add(db_quiz)
+    db.commit()
+    db.refresh(db_quiz)
+
+    # 5. Save QuizQuestions to Database
+    for item in questions_data:
+        # Extract correct answer key e.g. "A", "B", "C", "D"
+        ans_key = item.get("correct_answer", "").strip().upper()
+        if len(ans_key) > 1:
+            ans_key = ans_key[0] # Fallback if model returns e.g. "A."
+
+        db_q = models.QuizQuestion(
+            quiz_id=db_quiz.id,
+            question_text=item.get("question"),
+            options=json.dumps(item.get("options", [])),
+            correct_answer=ans_key,
+            explanation=item.get("explanation", ""),
+            student_answer=None
+        )
+        db.add(db_q)
+    
+    db.commit()
+    db.refresh(db_quiz)
+
+    # 6. Return response (options decoded from JSON string)
+    questions_resp = [
+        schemas.QuizQuestionResponse(
+            id=q.id,
+            question_text=q.question_text,
+            options=json.loads(q.options)
+        )
+        for q in db_quiz.questions
+    ]
+    return schemas.QuizResponse(
+        id=db_quiz.id,
+        document_id=db_quiz.document_id,
+        title=db_quiz.title,
+        created_at=db_quiz.created_at,
+        questions=questions_resp
+    )
+
+@app.get("/quizzes/{quiz_id}", response_model=schemas.QuizResponse, tags=["Quizzes"])
+def get_quiz(
+    quiz_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Fetches details of a specific quiz, hiding the answers.
+    """
+    db_quiz = db.query(models.Quiz).filter(
+        models.Quiz.id == quiz_id,
+        models.Quiz.user_id == current_user.id
+    ).first()
+    if not db_quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    questions_resp = [
+        schemas.QuizQuestionResponse(
+            id=q.id,
+            question_text=q.question_text,
+            options=json.loads(q.options)
+        )
+        for q in db_quiz.questions
+    ]
+    return schemas.QuizResponse(
+        id=db_quiz.id,
+        document_id=db_quiz.document_id,
+        title=db_quiz.title,
+        created_at=db_quiz.created_at,
+        questions=questions_resp
+    )
+
+@app.post("/quizzes/{quiz_id}/submit", response_model=schemas.QuizResultResponse, tags=["Quizzes"])
+def submit_quiz(
+    quiz_id: int,
+    request: schemas.QuizSubmitRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Receives student selections, compares them deterministically to correct answers,
+    updates database records, and returns the graded results.
+    """
+    db_quiz = db.query(models.Quiz).filter(
+        models.Quiz.id == quiz_id,
+        models.Quiz.user_id == current_user.id
+    ).first()
+    if not db_quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    score = 0
+    graded_questions = []
+
+    for q in db_quiz.questions:
+        # Check student selection for this question id
+        student_ans = request.answers.get(str(q.id))
+        if student_ans:
+            student_ans = student_ans.strip().upper()
+            if len(student_ans) > 1:
+                student_ans = student_ans[0]
+        else:
+            student_ans = None
+
+        q.student_answer = student_ans
+        is_correct = (student_ans == q.correct_answer)
+        if is_correct:
+            score += 1
+
+        graded_questions.append(
+            schemas.GradedQuestionResponse(
+                id=q.id,
+                question_text=q.question_text,
+                options=json.loads(q.options),
+                student_answer=student_ans,
+                correct_answer=q.correct_answer,
+                explanation=q.explanation,
+                is_correct=is_correct
+            )
+        )
+
+    db_quiz.score = score
+    db.commit()
+
+    return schemas.QuizResultResponse(
+        id=db_quiz.id,
+        document_id=db_quiz.document_id,
+        title=db_quiz.title,
+        score=score,
+        total_questions=len(db_quiz.questions),
+        created_at=db_quiz.created_at,
+        questions=graded_questions
+    )
