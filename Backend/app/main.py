@@ -1,6 +1,6 @@
 import os
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -30,10 +30,10 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Enable CORS for frontend integration
+# Enable CORS for frontend integration (supporting cookies and credentials)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -91,16 +91,40 @@ def register(request: schemas.UserAuthRequest, db: Session = Depends(get_db)):
     return new_user
 
 @app.post("/auth/login", response_model=schemas.TokenResponse, tags=["Auth"])
-def login(request: schemas.UserAuthRequest, db: Session = Depends(get_db)):
+def login(request: schemas.UserAuthRequest, response: Response, db: Session = Depends(get_db)):
     """
-    Authenticates user credentials and returns a secure JWT access token.
+    Authenticates user credentials, sets an HttpOnly JWT access token cookie, and returns it.
     """
     user = db.query(models.User).filter(models.User.email == request.email).first()
     if not user or not verify_password(request.password, user.password_hash):
         raise HTTPException(status_code=400, detail="Incorrect email or password")
 
     access_token = create_access_token(data={"sub": str(user.id)})
+    
+    # Set HttpOnly cookie for web security (to prevent XSS theft)
+    response.set_cookie(
+        key="access_token",
+        value=access_token,
+        httponly=True,
+        max_age=1440 * 60,  # 24 hours
+        expires=1440 * 60,
+        samesite="lax",
+        secure=False,  # Set to True in production (HTTPS)
+    )
     return {"access_token": access_token, "token_type": "bearer"}
+
+@app.post("/auth/logout", tags=["Auth"])
+def logout(response: Response):
+    """
+    Logs out the user by deleting the secure HttpOnly JWT access token cookie.
+    """
+    response.delete_cookie(
+        key="access_token",
+        httponly=True,
+        samesite="lax",
+        secure=False,
+    )
+    return {"message": "Logged out successfully"}
 
 @app.get("/users/me", response_model=schemas.UserResponse, tags=["Users"])
 def get_me(current_user: models.User = Depends(get_current_user)):

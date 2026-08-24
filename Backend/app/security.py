@@ -3,7 +3,7 @@ import os
 from datetime import datetime, timedelta, timezone
 import bcrypt
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Cookie
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 
@@ -52,21 +52,27 @@ def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
 
 async def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    access_token: Optional[str] = Cookie(None),
     db: Session = Depends(get_db)
 ) -> models.User:
     """
-    Dependency that authenticates requests by validating JWT bearer tokens
-    and returns the corresponding User database model.
+    Dependency that authenticates requests by validating JWT bearer tokens (either in
+    the Authorization header or in the access_token Cookie) and returns the User model.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
-    if credentials is None:
-        raise credentials_exception
+    
+    token = None
+    if credentials is not None:
+        token = credentials.credentials
+    elif access_token is not None:
+        token = access_token
 
-    token = credentials.credentials
+    if token is None:
+        raise credentials_exception
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         user_id_str: str = payload.get("sub")

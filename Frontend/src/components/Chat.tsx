@@ -1,13 +1,12 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { Message, MessageProps } from "./Message";
 import { ChatInput } from "./ChatInput";
 import styles from "./Chat.module.css";
 
 const API_BASE = "http://localhost:8000";
-const GUEST_EMAIL = "guest_student@sbud.local";
-const GUEST_PASSWORD = "guestpassword123";
 
 const INITIAL_MESSAGES: MessageProps[] = [
   {
@@ -20,11 +19,12 @@ export const Chat: React.FC = () => {
   const [messages, setMessages] = useState<MessageProps[]>(INITIAL_MESSAGES);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [token, setToken] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<number | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const router = useRouter();
 
   // Scroll to bottom on new messages
   const scrollToBottom = () => {
@@ -35,80 +35,32 @@ export const Chat: React.FC = () => {
     scrollToBottom();
   }, [messages, isLoading]);
 
-  // Silent authentication on mount
+  // Authenticate user on mount
   useEffect(() => {
-    const initializeAuth = async () => {
+    const checkAuth = async () => {
       try {
-        let savedToken = localStorage.getItem("sbud_token");
-        if (savedToken) {
-          setToken(savedToken);
-          setIsInitializing(false);
-          return;
-        }
-
-        // Try login first
-        try {
-          const loginResp = await fetch(`${API_BASE}/auth/login`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ email: GUEST_EMAIL, password: GUEST_PASSWORD }),
-          });
-
-          if (loginResp.ok) {
-            const data = await loginResp.json();
-            localStorage.setItem("sbud_token", data.access_token);
-            setToken(data.access_token);
-            setIsInitializing(false);
-            return;
-          }
-        } catch (e) {
-          // If network error, let it fall through to registration
-        }
-
-        // If login failed, register the guest user
-        const registerResp = await fetch(`${API_BASE}/auth/register`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: GUEST_EMAIL, password: GUEST_PASSWORD }),
+        const response = await fetch(`${API_BASE}/users/me`, {
+          method: "GET",
+          credentials: "include", // Transmits secure HttpOnly cookie
         });
 
-        if (!registerResp.ok && registerResp.status !== 400) {
-          throw new Error("Failed to register guest user account.");
+        if (!response.ok) {
+          throw new Error("Unauthenticated user session.");
         }
 
-        // Login after registration
-        const loginResp = await fetch(`${API_BASE}/auth/login`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: GUEST_EMAIL, password: GUEST_PASSWORD }),
-        });
-
-        if (!loginResp.ok) {
-          throw new Error("Failed to login to guest user account.");
-        }
-
-        const data = await loginResp.json();
-        localStorage.setItem("sbud_token", data.access_token);
-        setToken(data.access_token);
-      } catch (err: any) {
-        console.error("Auth initialization failed:", err);
-        setError("Failed to connect to the backend server. Please make sure the FastAPI server is running.");
-      } finally {
+        const data = await response.json();
+        setUserEmail(data.email);
         setIsInitializing(false);
+      } catch (err) {
+        console.warn("Auth check failed, redirecting to login:", err);
+        router.push("/login");
       }
     };
 
-    initializeAuth();
-  }, []);
+    checkAuth();
+  }, [router]);
 
   const handleSendMessage = async (text: string) => {
-    if (!token) {
-      setError("No authentication token available. Retrying connection...");
-      localStorage.removeItem("sbud_token");
-      window.location.reload();
-      return;
-    }
-
     // Append user message immediately
     const userMessage: MessageProps = {
       role: "user",
@@ -121,19 +73,19 @@ export const Chat: React.FC = () => {
     setError(null);
 
     try {
-      // Map frontend messages to match backend ChatRequest format (excluding system prompt & timestamp)
+      // Map frontend messages to match backend ChatRequest format
       const mappedMessages = [...messages, userMessage].map(msg => ({
         role: msg.role,
         content: msg.content
       }));
 
-      // Call backend /chat
+      // Call backend /chat with credentials: "include" to transmit the HttpOnly access_token cookie
       const response = await fetch(`${API_BASE}/chat`, {
         method: "POST",
         headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${token}`
+          "Content-Type": "application/json"
         },
+        credentials: "include",
         body: JSON.stringify({
           messages: mappedMessages,
           conversation_id: conversationId
@@ -142,9 +94,8 @@ export const Chat: React.FC = () => {
 
       if (!response.ok) {
         if (response.status === 401) {
-          // Token expired or invalid
-          localStorage.removeItem("sbud_token");
-          throw new Error("Authentication expired. Retrying connection...");
+          router.push("/login");
+          return;
         }
         const errData = await response.json().catch(() => ({}));
         throw new Error(errData.detail || "Server returned an error responding to your request.");
@@ -168,12 +119,23 @@ export const Chat: React.FC = () => {
     }
   };
 
+  const handleLogout = async () => {
+    try {
+      await fetch(`${API_BASE}/auth/logout`, {
+        method: "POST",
+        credentials: "include"
+      });
+    } catch (e) {
+      console.error("Logout request failed:", e);
+    } finally {
+      router.push("/login");
+    }
+  };
+
   const handleRetry = () => {
     setError(null);
-    // Grab the last user message in the list to retry sending it
     const lastUserMsg = [...messages].reverse().find(msg => msg.role === "user");
     if (lastUserMsg) {
-      // Remove last user message from current list because handleSendMessage will re-append it
       setMessages(prev => prev.filter((_, idx) => idx !== prev.lastIndexOf(lastUserMsg)));
       handleSendMessage(lastUserMsg.content);
     }
@@ -188,23 +150,18 @@ export const Chat: React.FC = () => {
           <h1 className={styles.logo}>SBud</h1>
           <span className={styles.tagline}>AI Study Tutor</span>
         </div>
-        <div className={styles.statusIndicator}>
-          {isInitializing ? (
-            <>
-              <span className={`${styles.statusDot} ${styles.statusConnecting}`} />
-              Connecting
-            </>
-          ) : token ? (
-            <>
-              <span className={styles.statusDot} />
-              Online
-            </>
-          ) : (
-            <>
-              <span className={`${styles.statusDot} ${styles.statusOffline}`} />
-              Offline
-            </>
+        
+        <div className={styles.headerControls}>
+          {userEmail && (
+            <span className={styles.userEmail} title={userEmail}>
+              {userEmail.split("@")[0]}
+            </span>
           )}
+          <button onClick={handleLogout} className={styles.logoutButton} aria-label="Log Out">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={styles.logoutIcon}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15M12 9l-3 3m0 0 3 3m-3-3h12.75" />
+            </svg>
+          </button>
         </div>
       </header>
 
@@ -242,7 +199,7 @@ export const Chat: React.FC = () => {
                   </svg>
                   <span>{error}</span>
                 </div>
-                {token && <button className={styles.retryButton} onClick={handleRetry}>Retry</button>}
+                <button className={styles.retryButton} onClick={handleRetry}>Retry</button>
               </div>
             )}
 
