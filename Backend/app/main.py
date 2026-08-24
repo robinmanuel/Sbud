@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.schemas import ChatRequest, ChatResponse
 from app import schemas, models
 from app.database import get_db, init_db
+from app.security import hash_password, verify_password, create_access_token, get_current_user
 
 # Load environment variables from .env
 load_dotenv()
@@ -69,12 +70,62 @@ async def root():
     """
     return {"message": "Welcome to SBud API"}
 
-@app.post("/chat", response_model=ChatResponse, tags=["Chat"])
-async def chat(request: ChatRequest):
+# =====================================================================
+# Authentication Endpoints
+# =====================================================================
+
+@app.post("/auth/register", response_model=schemas.UserResponse, status_code=201, tags=["Auth"])
+def register(request: schemas.UserAuthRequest, db: Session = Depends(get_db)):
     """
-    Sends the conversation history (including the latest message) to the Gemini AI model and returns the response.
+    Registers a new student user. Validates email uniqueness and hashes their password.
+    """
+    existing_user = db.query(models.User).filter(models.User.email == request.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Email is already registered")
+
+    hashed_pw = hash_password(request.password)
+    new_user = models.User(email=request.email, password_hash=hashed_pw)
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+@app.post("/auth/login", response_model=schemas.TokenResponse, tags=["Auth"])
+def login(request: schemas.UserAuthRequest, db: Session = Depends(get_db)):
+    """
+    Authenticates user credentials and returns a secure JWT access token.
+    """
+    user = db.query(models.User).filter(models.User.email == request.email).first()
+    if not user or not verify_password(request.password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
+
+    access_token = create_access_token(data={"sub": str(user.id)})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.get("/users/me", response_model=schemas.UserResponse, tags=["Users"])
+def get_me(current_user: models.User = Depends(get_current_user)):
+    """
+    Retrieves information about the currently authenticated user.
+    """
+    return current_user
+
+
+# =====================================================================
+# Chat Endpoints
+# =====================================================================
+
+@app.post("/chat", response_model=ChatResponse, tags=["Chat"])
+async def chat(
+    request: ChatRequest, 
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Sends the conversation history (including the latest message) to the Gemini AI model,
+    saves both user input and AI response to the database, and returns the response.
     
     - **messages**: List of previous chat messages along with the new user message.
+    - **conversation_id**: Optional ID of an existing conversation to save messages to.
     """
     global model
     
@@ -92,14 +143,56 @@ async def chat(request: ChatRequest):
              )
         
     try:
-        # Format conversation history for Gemini API
-        # Gemini expects roles to be 'user' and 'model' (mapping 'assistant' -> 'model')
+        # Get the latest user message content from request
+        user_content = request.messages[-1].content
+        
+        # If conversation_id is provided, verify it exists and belongs to current_user; otherwise, create a new conversation
+        if request.conversation_id is not None:
+            db_conv = db.query(models.Conversation).filter(
+                models.Conversation.id == request.conversation_id,
+                models.Conversation.user_id == current_user.id
+            ).first()
+            if not db_conv:
+                raise HTTPException(status_code=404, detail="Conversation not found")
+            conversation_id = request.conversation_id
+
+            # Save user's latest message to the database
+            user_msg = models.Message(
+                conversation_id=conversation_id,
+                role="user",
+                content=user_content
+            )
+            db.add(user_msg)
+            db.commit()
+        else:
+            db_conv = models.Conversation(user_id=current_user.id)
+            db.add(db_conv)
+            db.commit()
+            db.refresh(db_conv)
+            conversation_id = db_conv.id
+
+            # Save the entire incoming message history to the database
+            for msg in request.messages:
+                db_msg = models.Message(
+                    conversation_id=conversation_id,
+                    role=msg.role,
+                    content=msg.content
+                )
+                db.add(db_msg)
+            db.commit()
+
+        # Retrieve the complete conversation history from database to build history for Gemini
+        history_messages = db.query(models.Message).filter(
+            models.Message.conversation_id == conversation_id
+        ).order_by(models.Message.created_at.asc()).all()
+
+        # Format history for Gemini (user -> user, assistant -> model)
         contents = [
             {
                 "role": "user" if msg.role == "user" else "model",
                 "parts": [msg.content]
             }
-            for msg in request.messages
+            for msg in history_messages
         ]
         
         # Call the Gemini API asynchronously
@@ -111,8 +204,19 @@ async def chat(request: ChatRequest):
                 status_code=502,
                 detail="Empty response received from the Gemini AI model."
             )
+
+        # Save AI's response to the database
+        assistant_msg = models.Message(
+            conversation_id=conversation_id,
+            role="assistant",
+            content=response.text
+        )
+        db.add(assistant_msg)
+        db.commit()
             
-        return ChatResponse(reply=response.text)
+        return ChatResponse(reply=response.text, conversation_id=conversation_id)
+    except HTTPException:
+        raise
     except Exception as e:
         # Catch other API failures or exceptions
         import traceback
@@ -128,22 +232,25 @@ async def chat(request: ChatRequest):
 # =====================================================================
 
 @app.post("/conversations", response_model=schemas.ConversationCreateResponse, status_code=201, tags=["Conversations"])
-def create_conversation(db: Session = Depends(get_db)):
+def create_conversation(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     """
-    Creates a new, empty conversation in the database.
+    Creates a new, empty conversation in the database belonging to the authenticated user.
     """
-    db_conv = models.Conversation()
+    db_conv = models.Conversation(user_id=current_user.id)
     db.add(db_conv)
     db.commit()
     db.refresh(db_conv)
     return db_conv
 
 @app.get("/conversations/{conversation_id}", response_model=schemas.ConversationDetailResponse, tags=["Conversations"])
-def get_conversation(conversation_id: int, db: Session = Depends(get_db)):
+def get_conversation(conversation_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     """
-    Retrieves the conversation metadata and all related messages.
+    Retrieves the conversation metadata and all related messages, verifying owner authorization.
     """
-    db_conv = db.query(models.Conversation).filter(models.Conversation.id == conversation_id).first()
+    db_conv = db.query(models.Conversation).filter(
+        models.Conversation.id == conversation_id,
+        models.Conversation.user_id == current_user.id
+    ).first()
     if not db_conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
     return db_conv
@@ -152,16 +259,21 @@ def get_conversation(conversation_id: int, db: Session = Depends(get_db)):
 async def create_message(
     conversation_id: int,
     request: schemas.MessageCreateRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
 ):
     """
     Saves the student's message, retrieves the full conversation history from the database,
     sends it to the Gemini model, saves the AI's response, and returns the AI's response message.
+    Ensures that the conversation belongs to the authenticated user.
     """
     global model
 
-    # 1. Verify that the conversation exists
-    db_conv = db.query(models.Conversation).filter(models.Conversation.id == conversation_id).first()
+    # 1. Verify that the conversation exists and belongs to the current user
+    db_conv = db.query(models.Conversation).filter(
+        models.Conversation.id == conversation_id,
+        models.Conversation.user_id == current_user.id
+    ).first()
     if not db_conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
 

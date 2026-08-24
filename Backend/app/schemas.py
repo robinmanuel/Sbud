@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Literal
+from typing import List, Literal, Optional
 from datetime import datetime
 
 # Existing schemas for stateful /chat (backward compatibility)
@@ -9,9 +9,11 @@ class Message(BaseModel):
 
 class ChatRequest(BaseModel):
     messages: List[Message] = Field(..., min_length=1, description="The conversation history")
+    conversation_id: Optional[int] = Field(None, description="The ID of the conversation to save messages to")
 
 class ChatResponse(BaseModel):
     reply: str = Field(..., description="The response reply to the student")
+    conversation_id: int = Field(..., description="The active conversation ID")
 
 
 # New database-backed schemas
@@ -31,6 +33,7 @@ class MessageResponse(BaseModel):
 
 class ConversationCreateResponse(BaseModel):
     id: int
+    user_id: int
     created_at: datetime
 
     model_config = {
@@ -39,9 +42,28 @@ class ConversationCreateResponse(BaseModel):
 
 class ConversationDetailResponse(BaseModel):
     id: int
+    user_id: int
     created_at: datetime
     messages: List[MessageResponse]
 
     model_config = {
         "from_attributes": True
     }
+
+# New schemas for User Auth and Profiles
+class UserAuthRequest(BaseModel):
+    email: str = Field(..., description="The user's email address")
+    password: str = Field(..., min_length=6, description="The user's password (min 6 characters)")
+
+class UserResponse(BaseModel):
+    id: int
+    email: str
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"

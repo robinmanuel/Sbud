@@ -10,11 +10,34 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@localho
 
 # Connection arguments (e.g. check_same_thread is required only for SQLite)
 connect_args = {}
-if DATABASE_URL.startswith("sqlite"):
-    connect_args["check_same_thread"] = False
+engine = None
 
-# Create the SQLAlchemy engine
-engine = create_engine(DATABASE_URL, connect_args=connect_args)
+if DATABASE_URL.startswith("postgresql"):
+    try:
+        # Test connection to the target PostgreSQL server
+        parsed = urlparse(DATABASE_URL)
+        dbname = parsed.path.lstrip('/') or "postgres"
+        test_conn = psycopg2.connect(
+            host=parsed.hostname or "localhost",
+            port=parsed.port or 5432,
+            user=parsed.username or "postgres",
+            password=parsed.password or "",
+            dbname="postgres",  # connect to default postgres first to verify server availability
+            connect_timeout=3
+        )
+        test_conn.close()
+        # Connection succeeded! Use PostgreSQL
+        engine = create_engine(DATABASE_URL)
+        print("Connected to PostgreSQL successfully.")
+    except Exception as e:
+        print(f"WARNING: PostgreSQL connection failed ({e}). Falling back to SQLite.")
+        DATABASE_URL = "sqlite:///./sbud.db"
+        connect_args["check_same_thread"] = False
+        engine = create_engine(DATABASE_URL, connect_args=connect_args)
+else:
+    if DATABASE_URL.startswith("sqlite"):
+        connect_args["check_same_thread"] = False
+    engine = create_engine(DATABASE_URL, connect_args=connect_args)
 
 # Create a session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
