@@ -42,6 +42,10 @@ else:
 # Create a session factory
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
+# Export database type
+DB_TYPE = "postgresql" if "postgresql" in str(engine.url) else "sqlite"
+
+
 # Declarative base class for models
 Base = declarative_base()
 
@@ -98,6 +102,17 @@ def init_db():
     """
     create_db_if_not_exists()
     
+    # Enable pgvector if on PostgreSQL
+    if DB_TYPE == "postgresql":
+        from sqlalchemy import text
+        try:
+            with engine.connect() as conn:
+                conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
+                conn.commit()
+            print("pgvector extension enabled/verified.")
+        except Exception as e:
+            print(f"WARNING: Could not verify/enable pgvector extension: {e}")
+
     # Import models to register them on Base.metadata
     from app import models
     Base.metadata.create_all(bind=engine)

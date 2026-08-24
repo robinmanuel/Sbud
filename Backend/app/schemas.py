@@ -104,3 +104,13 @@ class DocumentDetailResponse(BaseModel):
     model_config = {
         "from_attributes": True
     }
+
+class SearchRequest(BaseModel):
+    query: str
+
+class ChunkSearchResponse(BaseModel):
+    chunk_id: int
+    document_id: int
+    chunk_text: str
+    page_number: Optional[int] = None
+    similarity: float

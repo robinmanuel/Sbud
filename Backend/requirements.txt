@@ -8,3 +8,4 @@ psycopg2-binary>=2.9.0
 bcrypt>=4.1.0
 pyjwt>=2.8.0
 pypdf>=4.0.0
+pgvector>=0.2.0

@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Depends, Response, UploadFile, File
 import pypdf
 import io
+import json
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import google.generativeai as genai
@@ -53,7 +54,11 @@ SYSTEM_INSTRUCTION = (
     "6. If the student asks for an answer to a homework/study problem, explain the step-by-step reasoning "
     "and logic rather than only providing the final answer.\n"
     "7. Never make up facts or pretend to know something you do not know. If you are unsure, be honest.\n"
-    "8. Keep your responses reasonably concise, unless the student explicitly asks for more detail."
+    "8. Keep your responses reasonably concise, unless the student explicitly asks for more detail.\n"
+    "9. If study materials are provided under [SUPPLIED STUDY MATERIAL CONTEXT], use them to answer the student's question. "
+    "If the material doesn't contain enough information to answer the question, explicitly state that you do not "
+    "have that information rather than inventing an answer. Clearly distinguish information from the student's materials "
+    "from general knowledge."
 )
 
 # Configure Gemini API
@@ -360,6 +365,72 @@ async def create_message(
         models.Message.conversation_id == conversation_id
     ).order_by(models.Message.created_at.asc()).all()
 
+    # RAG: Search relevant study materials of this user
+    context_list = []
+    sources_list = []
+    
+    # Check if the user has uploaded any study materials
+    user_docs_count = db.query(models.Document).filter(models.Document.user_id == current_user.id).count()
+    if user_docs_count > 0:
+        try:
+            # Embed the student's question (retrieval_query task type)
+            query_vector = get_embedding(request.content, task_type="retrieval_query")
+            
+            # Retrieve relevant chunks across all user's documents
+            from app.database import DB_TYPE
+            if DB_TYPE == "postgresql":
+                db_chunks = db.query(
+                    models.DocumentChunk
+                ).join(
+                    models.Document, models.Document.id == models.DocumentChunk.document_id
+                ).filter(
+                    models.Document.user_id == current_user.id
+                ).order_by(
+                    models.DocumentChunk.embedding.cosine_distance(query_vector)
+                ).limit(3).all()
+            else:
+                # SQLite Cosine Similarity calculation in Python memory
+                import math
+                def cosine_similarity(v1, v2):
+                    dot_product = sum(x * y for x, y in zip(v1, v2))
+                    magnitude1 = math.sqrt(sum(x * x for x in v1))
+                    magnitude2 = math.sqrt(sum(y * y for y in v2))
+                    if not magnitude1 or not magnitude2:
+                        return 0.0
+                    return dot_product / (magnitude1 * magnitude2)
+
+                all_chunks = db.query(models.DocumentChunk).join(
+                    models.Document, models.Document.id == models.DocumentChunk.document_id
+                ).filter(
+                    models.Document.user_id == current_user.id
+                ).all()
+
+                scored_chunks = []
+                for chunk in all_chunks:
+                    try:
+                        chunk_vector = json.loads(chunk.embedding)
+                        score = cosine_similarity(query_vector, chunk_vector)
+                        scored_chunks.append((score, chunk))
+                    except Exception:
+                        continue
+
+                # Sort by similarity score descending and take top 3
+                scored_chunks.sort(key=lambda x: x[0], reverse=True)
+                # Filter by similarity threshold to avoid completely unrelated noise (0.35 is standard)
+                db_chunks = [item[1] for item in scored_chunks[:3] if item[0] >= 0.35]
+
+            for chunk in db_chunks:
+                context_list.append(
+                    f"Document: {chunk.document.filename}\n"
+                    f"Content: {chunk.chunk_text}"
+                )
+                sources_list.append({
+                    "document": chunk.document.filename,
+                    "page": chunk.page_number or "N/A"
+                })
+        except Exception as e:
+            print(f"WARNING: RAG retrieval failed: {e}")
+
     # 4. Check if Gemini model is configured
     if not model:
          dynamic_api_key = os.getenv("GEMINI_API_KEY")
@@ -374,13 +445,26 @@ async def create_message(
 
     try:
         # 5. Format history for Gemini (user -> user, assistant -> model)
-        contents = [
-            {
-                "role": "user" if msg.role == "user" else "model",
-                "parts": [msg.content]
-            }
-            for msg in history_messages
-        ]
+        contents = []
+        for i, msg in enumerate(history_messages):
+            role = "user" if msg.role == "user" else "model"
+            
+            # If this is the last user message, and we retrieved context, inject context
+            if i == len(history_messages) - 1 and msg.role == "user" and context_list:
+                context_str = "\n---\n".join(context_list)
+                combined_content = (
+                    f"[STUDENT QUESTION]\n{msg.content}\n\n"
+                    f"[SUPPLIED STUDY MATERIAL CONTEXT]\n{context_str}"
+                )
+                contents.append({
+                    "role": role,
+                    "parts": [combined_content]
+                })
+            else:
+                contents.append({
+                    "role": role,
+                    "parts": [msg.content]
+                })
 
         # 6. Call the Gemini API asynchronously
         response = await model.generate_content_async(contents)
@@ -391,11 +475,42 @@ async def create_message(
                 detail="Empty response received from the Gemini AI model."
             )
 
-        # 7. Save the Assistant's Message
+        reply_text = response.text
+
+        # 7. Format and append citations if sources were retrieved and referenced
+        # Filter for unique sources
+        if sources_list:
+            seen = set()
+            unique_sources = []
+            for s in sources_list:
+                k = (s["document"], s["page"])
+                if k not in seen:
+                    seen.add(k)
+                    unique_sources.append(s)
+            
+            # Only append sources block if the AI actually has an answer and didn't state it's missing
+            lower_reply = reply_text.lower()
+            missing_keywords = [
+                "do not have that information", 
+                "not in the supplied", 
+                "not in the provided",
+                "not mention",
+                "does not contain"
+            ]
+            is_missing = any(keyword in lower_reply for keyword in missing_keywords)
+            
+            if unique_sources and not is_missing:
+                citations = [
+                    f"📄 {s['document']} — Page {s['page']}"
+                    for s in unique_sources
+                ]
+                reply_text += "\n\nSources:\n" + "\n".join(citations)
+
+        # 8. Save the Assistant's Message
         assistant_msg = models.Message(
             conversation_id=conversation_id,
             role="assistant",
-            content=response.text
+            content=reply_text
         )
         db.add(assistant_msg)
         db.commit()
@@ -416,6 +531,77 @@ async def create_message(
 # Document Management Endpoints (Study Materials)
 # =====================================================================
 
+def chunk_text(text: str, max_chars: int = 800) -> List[str]:
+    """
+    Splits text semantically, preserving paragraph boundaries where possible.
+    """
+    paragraphs = text.split("\n\n")
+    chunks = []
+    current_chunk = []
+    current_len = 0
+    
+    for para in paragraphs:
+        para = para.strip()
+        if not para:
+            continue
+        
+        # If paragraph is too long, split it by sentence-like structures
+        if len(para) > max_chars:
+            sentences = para.replace(". ", ".\n").split("\n")
+            for sent in sentences:
+                sent = sent.strip()
+                if not sent:
+                    continue
+                if current_len + len(sent) > max_chars:
+                    if current_chunk:
+                        chunks.append("\n".join(current_chunk))
+                    current_chunk = [sent]
+                    current_len = len(sent)
+                else:
+                    current_chunk.append(sent)
+                    current_len += len(sent)
+        else:
+            if current_len + len(para) > max_chars:
+                if current_chunk:
+                    chunks.append("\n\n".join(current_chunk))
+                current_chunk = [para]
+                current_len = len(para)
+            else:
+                current_chunk.append(para)
+                current_len += len(para)
+                
+    if current_chunk:
+        chunks.append("\n\n".join(current_chunk))
+        
+    return chunks
+
+def get_embedding(text: str, task_type: str = "retrieval_document") -> List[float]:
+    """
+    Generates text embeddings using Gemini's text-embedding-004 model.
+    """
+    dynamic_api_key = os.getenv("GEMINI_API_KEY")
+    if dynamic_api_key:
+        genai.configure(api_key=dynamic_api_key)
+    else:
+        raise HTTPException(
+            status_code=500,
+            detail="Gemini API Key is not configured. Cannot perform vector embeddings."
+        )
+    
+    try:
+        result = genai.embed_content(
+            model="models/gemini-embedding-001",
+            content=text,
+            task_type=task_type
+        )
+        return result["embedding"]
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI model embedding failure: {str(e)}"
+        )
+
+
 @app.post("/documents", response_model=schemas.DocumentResponse, status_code=201, tags=["Documents"])
 async def upload_document(
     file: UploadFile = File(...),
@@ -424,7 +610,7 @@ async def upload_document(
 ):
     """
     Accepts a PDF upload, validates its size and type, extracts its text,
-    and stores its metadata and extracted content in the database.
+    segments it into chunks, generates vector embeddings, and stores everything in database.
     """
     # 1. Validate File MIME Type
     if file.content_type != "application/pdf":
@@ -459,7 +645,7 @@ async def upload_document(
             detail=f"Failed to parse PDF document: {str(e)}"
         )
 
-    # 4. Save to Database
+    # 4. Save parent Document metadata to Database
     db_doc = models.Document(
         user_id=current_user.id,
         filename=file.filename,
@@ -470,6 +656,25 @@ async def upload_document(
     db.add(db_doc)
     db.commit()
     db.refresh(db_doc)
+
+    # 5. Semantic Chunking
+    chunks = chunk_text(extracted_text)
+
+    # 6. Generate embeddings and save related DocumentChunks
+    from app.database import DB_TYPE
+    for index, chunk_text_content in enumerate(chunks):
+        vector = get_embedding(chunk_text_content, task_type="retrieval_document")
+        stored_embedding = json.dumps(vector) if DB_TYPE == "sqlite" else vector
+        
+        db_chunk = models.DocumentChunk(
+            document_id=db_doc.id,
+            chunk_text=chunk_text_content,
+            page_number=None,
+            embedding=stored_embedding
+        )
+        db.add(db_chunk)
+    
+    db.commit()
     return db_doc
 
 @app.get("/documents", response_model=List[schemas.DocumentResponse], tags=["Documents"])
@@ -503,3 +708,92 @@ def delete_document(
     db.delete(db_doc)
     db.commit()
     return {"message": "Document deleted successfully"}
+
+@app.post("/documents/{document_id}/search", response_model=List[schemas.ChunkSearchResponse], tags=["Documents"])
+def search_document(
+    document_id: int,
+    request: schemas.SearchRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Verifies document ownership, embeds the search query, performs similarity search,
+    and returns the top 3-5 relevant chunks.
+    """
+    # 1. Verify owner authorization
+    db_doc = db.query(models.Document).filter(
+        models.Document.id == document_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    if not db_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    if not request.query.strip():
+        return []
+
+    # 2. Embed the query (retrieval_query task type)
+    query_vector = get_embedding(request.query, task_type="retrieval_query")
+
+    # 3. Perform Similarity Search based on database engine type
+    from app.database import DB_TYPE
+    if DB_TYPE == "postgresql":
+        # Cosine distance order (closest has smallest distance)
+        db_chunks = db.query(
+            models.DocumentChunk,
+            (1 - models.DocumentChunk.embedding.cosine_distance(query_vector)).label("similarity")
+        ).filter(
+            models.DocumentChunk.document_id == document_id
+        ).order_by(
+            models.DocumentChunk.embedding.cosine_distance(query_vector)
+        ).limit(5).all()
+
+        results = [
+            schemas.ChunkSearchResponse(
+                chunk_id=chunk.id,
+                document_id=chunk.document_id,
+                chunk_text=chunk.chunk_text,
+                page_number=chunk.page_number,
+                similarity=float(similarity)
+            )
+            for chunk, similarity in db_chunks
+        ]
+    else:
+        # SQLite Cosine Similarity fallback in Python memory
+        import math
+        
+        def cosine_similarity(v1, v2):
+            dot_product = sum(x * y for x, y in zip(v1, v2))
+            magnitude1 = math.sqrt(sum(x * x for x in v1))
+            magnitude2 = math.sqrt(sum(y * y for y in v2))
+            if not magnitude1 or not magnitude2:
+                return 0.0
+            return dot_product / (magnitude1 * magnitude2)
+
+        db_chunks = db.query(models.DocumentChunk).filter(
+            models.DocumentChunk.document_id == document_id
+        ).all()
+
+        scored_chunks = []
+        for chunk in db_chunks:
+            # Decode the JSON array stored in Text column
+            try:
+                chunk_vector = json.loads(chunk.embedding)
+                score = cosine_similarity(query_vector, chunk_vector)
+                scored_chunks.append((score, chunk))
+            except Exception:
+                continue
+
+        # Sort descending by similarity score
+        scored_chunks.sort(key=lambda x: x[0], reverse=True)
+        results = [
+            schemas.ChunkSearchResponse(
+                chunk_id=chunk.id,
+                document_id=chunk.document_id,
+                chunk_text=chunk.chunk_text,
+                page_number=chunk.page_number,
+                similarity=float(score)
+            )
+            for score, chunk in scored_chunks[:5]
+        ]
+
+    return results
