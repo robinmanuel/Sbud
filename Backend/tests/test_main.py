@@ -240,12 +240,16 @@ def test_chat_success(mock_gemini, auth_headers):
     assert "conversation_id" in data
     
     # Verify that mapping converted 'assistant' role to 'model' and wrapped content in 'parts'
-    expected_contents = [
-        {"role": "user", "parts": ["Explain photosynthesis."]},
-        {"role": "model", "parts": ["Photosynthesis is the process..."]},
-        {"role": "user", "parts": ["Why is sunlight important?"]}
-    ]
-    mock_gemini.generate_content_async.assert_called_once_with(expected_contents)
+    args, kwargs = mock_gemini.generate_content_async.call_args
+    sent_contents = args[0]
+    assert len(sent_contents) == 3
+    assert sent_contents[0]["role"] == "user"
+    assert sent_contents[0]["parts"] == ["Explain photosynthesis."]
+    assert sent_contents[1]["role"] == "model"
+    assert sent_contents[1]["parts"] == ["Photosynthesis is the process..."]
+    assert sent_contents[2]["role"] == "user"
+    assert "Why is sunlight important?" in sent_contents[2]["parts"][0]
+    assert "[STUDENT PROGRESS & PERFORMANCE]" in sent_contents[2]["parts"][0]
 
 def test_chat_with_conversation_id_success(mock_gemini, auth_headers):
     """
@@ -456,3 +460,146 @@ def test_create_message_validation(auth_headers):
     # Empty content string
     response = client.post(f"/conversations/{conv_id}/messages", json={"content": ""}, headers=auth_headers)
     assert response.status_code == 422
+
+
+# =====================================================================
+# Student Progress & Weak-Topic Tracking Tests
+# =====================================================================
+
+def test_student_progress_flow(auth_headers):
+    """
+    Test the full student progress lifecycle:
+    1. Submitting a quiz with correct/incorrect answers.
+    2. Verification that StudentProgress stats are updated/calculated correctly.
+    3. Verification that /progress endpoint serves the accumulated stats.
+    """
+    db = TestingSessionLocal()
+    user = db.query(models.User).filter_by(email="testuser@example.com").first()
+    
+    # 1. Insert a mock study document
+    doc = models.Document(
+        user_id=user.id,
+        filename="physics.pdf",
+        file_type="application/pdf",
+        file_size=1024,
+        extracted_text="Physics content about gravity and motion."
+    )
+    db.add(doc)
+    db.commit()
+    doc_id = doc.id
+
+    # 2. Insert a quiz with distinct topics
+    quiz = models.Quiz(
+        user_id=user.id,
+        document_id=doc_id,
+        title="Physics Quiz",
+        score=None
+    )
+    db.add(quiz)
+    db.commit()
+    quiz_id = quiz.id
+
+    q1 = models.QuizQuestion(
+        quiz_id=quiz_id,
+        question_text="What is Newton's First Law?",
+        options='["A. Inertia", "B. Acceleration", "C. Reaction", "D. None"]',
+        correct_answer="A",
+        explanation="Inertia is the first law",
+        subject="Physics",
+        topic="Newton's Laws"
+    )
+    q2 = models.QuizQuestion(
+        quiz_id=quiz_id,
+        question_text="What is momentum definition?",
+        options='["A. mv", "B. ma", "C. mgh", "D. fd"]',
+        correct_answer="A",
+        explanation="p=mv",
+        subject="Physics",
+        topic="Momentum"
+    )
+    db.add(q1)
+    db.add(q2)
+    db.commit()
+    q1_id = q1.id
+    q2_id = q2.id
+    db.close()
+
+    # 3. Submit quiz responses: Q1 is correct, Q2 is incorrect
+    payload = {
+        "answers": {
+            str(q1_id): "A",
+            str(q2_id): "B"  # Incorrect
+        }
+    }
+    submit_resp = client.post(f"/quizzes/{quiz_id}/submit", json=payload, headers=auth_headers)
+    assert submit_resp.status_code == 200
+    submit_data = submit_resp.json()
+    assert submit_data["score"] == 1
+    assert submit_data["total_questions"] == 2
+
+    # 4. Fetch the student's progress and verify calculations
+    progress_resp = client.get("/progress", headers=auth_headers)
+    assert progress_resp.status_code == 200
+    progress_data = progress_resp.json()
+    assert len(progress_data) == 2
+
+    # Check Newton's Laws stats (1 attempted, 1 correct, 100%)
+    newton = next(p for p in progress_data if p["topic"] == "Newton's Laws")
+    assert newton["subject"] == "Physics"
+    assert newton["questions_attempted"] == 1
+    assert newton["questions_correct"] == 1
+    assert newton["accuracy"] == 100.0
+
+    # Check Momentum stats (1 attempted, 0 correct, 0%)
+    momentum = next(p for p in progress_data if p["topic"] == "Momentum")
+    assert momentum["subject"] == "Physics"
+    assert momentum["questions_attempted"] == 1
+    assert momentum["questions_correct"] == 0
+    assert momentum["accuracy"] == 0.0
+
+
+def test_chat_receives_progress_context(mock_gemini, auth_headers):
+    """
+    Test that the student progress context is dynamically injected 
+    into the Gemini chat endpoint payloads.
+    """
+    db = TestingSessionLocal()
+    user = db.query(models.User).filter_by(email="testuser@example.com").first()
+
+    # Inject a weak topic into progress
+    progress = models.StudentProgress(
+        user_id=user.id,
+        subject="Physics",
+        topic="Momentum",
+        questions_attempted=2,
+        questions_correct=0,
+        accuracy=0.0
+    )
+    db.add(progress)
+    db.commit()
+    db.close()
+
+    # Mock Gemini response
+    mock_response = MagicMock()
+    mock_response.text = "Let's review momentum!"
+    mock_gemini.generate_content_async.return_value = mock_response
+
+    # Ask the assistant a question
+    payload = {
+        "messages": [
+            {"role": "user", "content": "What should I study today?"}
+        ]
+    }
+    response = client.post("/chat", json=payload, headers=auth_headers)
+    assert response.status_code == 200
+
+    # Verify Gemini was invoked with progress context
+    args, kwargs = mock_gemini.generate_content_async.call_args
+    history_sent = args[0]
+    
+    # Last user message should contain the injected progress instruction block
+    last_message = history_sent[-1]["parts"][0]
+    assert "[STUDENT PROGRESS & PERFORMANCE]" in last_message
+    assert "Physics > Momentum: 0% accuracy" in last_message
+    assert "⚠️ Weak" in last_message
+

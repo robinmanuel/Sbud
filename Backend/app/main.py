@@ -228,13 +228,21 @@ async def chat(
         ).order_by(models.Message.created_at.asc()).all()
 
         # Format history for Gemini (user -> user, assistant -> model)
-        contents = [
-            {
-                "role": "user" if msg.role == "user" else "model",
-                "parts": [msg.content]
-            }
-            for msg in history_messages
-        ]
+        contents = []
+        for i, msg in enumerate(history_messages):
+            role = "user" if msg.role == "user" else "model"
+            if i == len(history_messages) - 1 and msg.role == "user":
+                student_ctx = get_student_context(current_user.id, db)
+                combined = f"{msg.content}\n\n{student_ctx}"
+                contents.append({
+                    "role": role,
+                    "parts": [combined]
+                })
+            else:
+                contents.append({
+                    "role": role,
+                    "parts": [msg.content]
+                })
         
         # Call the Gemini API asynchronously
         response = await model.generate_content_async(contents)
@@ -449,13 +457,19 @@ async def create_message(
         for i, msg in enumerate(history_messages):
             role = "user" if msg.role == "user" else "model"
             
-            # If this is the last user message, and we retrieved context, inject context
-            if i == len(history_messages) - 1 and msg.role == "user" and context_list:
-                context_str = "\n---\n".join(context_list)
-                combined_content = (
-                    f"[STUDENT QUESTION]\n{msg.content}\n\n"
-                    f"[SUPPLIED STUDY MATERIAL CONTEXT]\n{context_str}"
-                )
+            # If this is the last user message, inject context
+            if i == len(history_messages) - 1 and msg.role == "user":
+                student_ctx = get_student_context(current_user.id, db)
+                
+                rag_context_str = ""
+                if context_list:
+                    rag_context_str = "\n---\n".join(context_list)
+                
+                combined_content = f"[STUDENT QUESTION]\n{msg.content}\n\n"
+                if rag_context_str:
+                    combined_content += f"[SUPPLIED STUDY MATERIAL CONTEXT]\n{rag_context_str}\n\n"
+                combined_content += student_ctx
+                
                 contents.append({
                     "role": role,
                     "parts": [combined_content]
@@ -600,6 +614,47 @@ def get_embedding(text: str, task_type: str = "retrieval_document") -> List[floa
             status_code=502,
             detail=f"AI model embedding failure: {str(e)}"
         )
+
+
+def get_student_context(user_id: int, db: Session) -> str:
+    """
+    Helper function to build a context string containing the student's 
+    progress statistics, weak topics, and available study materials.
+    """
+    progress_records = db.query(models.StudentProgress).filter(
+        models.StudentProgress.user_id == user_id
+    ).all()
+    
+    user_docs = db.query(models.Document).filter(
+        models.Document.user_id == user_id
+    ).all()
+    
+    progress_lines = []
+    for rec in progress_records:
+        accuracy_str = f"{rec.accuracy:.0f}%"
+        is_weak = rec.accuracy < 70.0
+        status = "⚠️ Weak" if is_weak else "Good"
+        progress_lines.append(
+            f"- {rec.subject} > {rec.topic}: {accuracy_str} accuracy "
+            f"({rec.questions_correct}/{rec.questions_attempted} correct) [{status}]"
+        )
+    progress_str = "\n".join(progress_lines) if progress_lines else "No progress tracked yet. Encourage the student to take quizzes!"
+    
+    doc_lines = []
+    for doc in user_docs:
+        doc_lines.append(f"- {doc.filename}")
+    doc_str = "\n".join(doc_lines) if doc_lines else "No study materials uploaded yet."
+    
+    context = (
+        "[STUDENT PROGRESS & PERFORMANCE]\n"
+        f"{progress_str}\n\n"
+        "[AVAILABLE STUDY MATERIALS]\n"
+        f"{doc_str}\n\n"
+        "INSTRUCTION: Use the student's progress and weak topics (accuracy < 70%) to recommend what they should study next "
+        "when they ask for recommendations (e.g. 'What should I study today?'). Recommend specific review steps and "
+        "refer to their available study materials if relevant. Do not calculate scores yourself; use the provided accuracy and performance stats."
+    )
+    return context
 
 
 @app.post("/documents", response_model=schemas.DocumentResponse, status_code=201, tags=["Documents"])
@@ -806,7 +861,8 @@ def search_document(
 QUIZ_GENERATOR_INSTRUCTION = (
     "You are an expert quiz generator. Your task is to generate a multiple-choice quiz of exactly 5 questions "
     "based strictly on the provided study material. Each question must have exactly 4 options, a correct answer ('A', 'B', 'C', or 'D'), "
-    "and a brief explanation explaining the reasoning.\n"
+    "a brief explanation explaining the reasoning, a 'subject' (the broad field, e.g. 'Physics', 'Biology', 'History'), "
+    "and a specific 'topic' (e.g. 'Newton's Laws', 'Genetics', 'French Revolution').\n"
     "You must return a JSON array of objects conforming to the following structure:\n"
     "[\n"
     "  {\n"
@@ -818,7 +874,9 @@ QUIZ_GENERATOR_INSTRUCTION = (
     "      \"D. Transporting sugars\"\n"
     "    ],\n"
     "    \"correct_answer\": \"B\",\n"
-    "    \"explanation\": \"Chlorophyll absorbs light energy...\"\n"
+    "    \"explanation\": \"Chlorophyll absorbs light energy...\",\n"
+    "    \"subject\": \"Biology\",\n"
+    "    \"topic\": \"Cells\"\n"
     "  }\n"
     "]"
 )
@@ -907,7 +965,9 @@ async def generate_quiz(
             options=json.dumps(item.get("options", [])),
             correct_answer=ans_key,
             explanation=item.get("explanation", ""),
-            student_answer=None
+            student_answer=None,
+            subject=item.get("subject", "General"),
+            topic=item.get("topic", "General")
         )
         db.add(db_q)
     
@@ -999,6 +1059,37 @@ def submit_quiz(
         if is_correct:
             score += 1
 
+        # Determine subject and topic
+        subj = q.subject or "General"
+        top = q.topic or "General"
+
+        # Update student progress statistics if they attempted the question
+        if student_ans in ["A", "B", "C", "D"]:
+            progress = db.query(models.StudentProgress).filter_by(
+                user_id=current_user.id,
+                subject=subj,
+                topic=top
+            ).first()
+
+            if not progress:
+                progress = models.StudentProgress(
+                    user_id=current_user.id,
+                    subject=subj,
+                    topic=top,
+                    questions_attempted=0,
+                    questions_correct=0,
+                    accuracy=0.0
+                )
+                db.add(progress)
+
+            progress.questions_attempted += 1
+            if is_correct:
+                progress.questions_correct += 1
+
+            # Recalculate accuracy percentage (0.0 to 100.0)
+            if progress.questions_attempted > 0:
+                progress.accuracy = (progress.questions_correct / progress.questions_attempted) * 100.0
+
         graded_questions.append(
             schemas.GradedQuestionResponse(
                 id=q.id,
@@ -1007,7 +1098,9 @@ def submit_quiz(
                 student_answer=student_ans,
                 correct_answer=q.correct_answer,
                 explanation=q.explanation,
-                is_correct=is_correct
+                is_correct=is_correct,
+                subject=subj,
+                topic=top
             )
         )
 
@@ -1023,3 +1116,17 @@ def submit_quiz(
         created_at=db_quiz.created_at,
         questions=graded_questions
     )
+
+
+@app.get("/progress", response_model=List[schemas.StudentProgressResponse], tags=["Progress"])
+def get_progress(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Retrieves the progress statistics for the currently authenticated user.
+    """
+    return db.query(models.StudentProgress).filter(
+        models.StudentProgress.user_id == current_user.id
+    ).all()
+

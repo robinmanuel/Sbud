@@ -1099,3 +1099,35 @@
   transform: translateY(-1px);
 }
 
+.footerActions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.progressButton {
+  background: transparent;
+  border: 1px solid var(--border-light);
+  color: var(--text-muted);
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background-color 0.15s;
+}
+
+.progressButton:hover {
+  color: var(--accent-indigo);
+  border-color: rgba(99, 102, 241, 0.2);
+  background-color: rgba(99, 102, 241, 0.05);
+}
+
+.progressIcon {
+  width: 14px;
+  height: 14px;
+}
+
+

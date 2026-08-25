@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from app.database import Base, DB_TYPE
@@ -37,6 +37,13 @@ class User(Base):
     # One-to-many relationship with Quiz
     quizzes = relationship(
         "Quiz",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+
+    # One-to-many relationship with StudentProgress
+    progress_records = relationship(
+        "StudentProgress",
         back_populates="user",
         cascade="all, delete-orphan"
     )
@@ -192,6 +199,31 @@ class QuizQuestion(Base):
     correct_answer = Column(String, nullable=False) # "A", "B", "C", "D"
     explanation = Column(Text, nullable=False)
     student_answer = Column(String, nullable=True) # Selected option, populated on submit
+    subject = Column(String, nullable=True) # E.g. "Physics"
+    topic = Column(String, nullable=True) # E.g. "Newton's Laws"
 
     # Parent relationship
     quiz = relationship("Quiz", back_populates="questions")
+
+
+class StudentProgress(Base):
+    """
+    SQLAlchemy model representing student progress and topic accuracy statistics.
+    """
+    __tablename__ = "student_progress"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    subject = Column(String, nullable=False)
+    topic = Column(String, nullable=False)
+    questions_attempted = Column(Integer, default=0, nullable=False)
+    questions_correct = Column(Integer, default=0, nullable=False)
+    accuracy = Column(Float, default=0.0, nullable=False)
+    last_studied_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+    # Reference back to the parent user
+    user = relationship("User", back_populates="progress_records")

@@ -145,6 +145,8 @@ class GradedQuestionResponse(BaseModel):
     correct_answer: str
     explanation: str
     is_correct: bool
+    subject: Optional[str] = None
+    topic: Optional[str] = None
 
 class QuizResultResponse(BaseModel):
     id: int
@@ -158,3 +160,18 @@ class QuizResultResponse(BaseModel):
     model_config = {
         "from_attributes": True
     }
+
+
+class StudentProgressResponse(BaseModel):
+    id: int
+    subject: str
+    topic: str
+    questions_attempted: int
+    questions_correct: int
+    accuracy: float
+    last_studied_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
+
