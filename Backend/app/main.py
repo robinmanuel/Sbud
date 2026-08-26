@@ -244,26 +244,20 @@ async def chat(
                     "parts": [msg.content]
                 })
         
-        # Call the Gemini API asynchronously
-        response = await model.generate_content_async(contents)
-        
-        # Verify response text is present
-        if not response.text:
-            raise HTTPException(
-                status_code=502,
-                detail="Empty response received from the Gemini AI model."
-            )
+        # Call the Gemini API asynchronously via AIService
+        from app.ai_service import AIService
+        reply_text = await AIService.generate_chat_response(contents, current_user.id, db)
 
         # Save AI's response to the database
         assistant_msg = models.Message(
             conversation_id=conversation_id,
             role="assistant",
-            content=response.text
+            content=reply_text
         )
         db.add(assistant_msg)
         db.commit()
             
-        return ChatResponse(reply=response.text, conversation_id=conversation_id)
+        return ChatResponse(reply=reply_text, conversation_id=conversation_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -439,18 +433,6 @@ async def create_message(
         except Exception as e:
             print(f"WARNING: RAG retrieval failed: {e}")
 
-    # 4. Check if Gemini model is configured
-    if not model:
-         dynamic_api_key = os.getenv("GEMINI_API_KEY")
-         if dynamic_api_key:
-             genai.configure(api_key=dynamic_api_key)
-             model = genai.GenerativeModel("gemini-3.6-flash", system_instruction=SYSTEM_INSTRUCTION)
-         else:
-             raise HTTPException(
-                 status_code=500,
-                 detail="Gemini API Key is not configured on the backend. Please check the .env file."
-             )
-
     try:
         # 5. Format history for Gemini (user -> user, assistant -> model)
         contents = []
@@ -480,16 +462,9 @@ async def create_message(
                     "parts": [msg.content]
                 })
 
-        # 6. Call the Gemini API asynchronously
-        response = await model.generate_content_async(contents)
-
-        if not response.text:
-            raise HTTPException(
-                status_code=502,
-                detail="Empty response received from the Gemini AI model."
-            )
-
-        reply_text = response.text
+        # 6. Call the Gemini API asynchronously via AIService
+        from app.ai_service import AIService
+        reply_text = await AIService.generate_chat_response(contents, current_user.id, db)
 
         # 7. Format and append citations if sources were retrieved and referenced
         # Filter for unique sources
@@ -902,40 +877,13 @@ async def generate_quiz(
     if not db_doc.extracted_text or not db_doc.extracted_text.strip():
         raise HTTPException(status_code=400, detail="Document has no text content to generate a quiz from.")
 
-    # 2. Configure Gemini for structured JSON generation
-    # Try loading or configuring Gemini
-    dynamic_api_key = os.getenv("GEMINI_API_KEY")
-    if not dynamic_api_key:
-        raise HTTPException(status_code=500, detail="Gemini API Key is not configured on the backend.")
-    
-    genai.configure(api_key=dynamic_api_key)
-    quiz_model = genai.GenerativeModel(
-        "gemini-3.6-flash",
-        system_instruction=QUIZ_GENERATOR_INSTRUCTION
-    )
-
+    # 2. Call AIService to generate quiz JSON array (handles rate limits, caching, usage logs)
+    from app.ai_service import AIService
     try:
-        # 3. Call Gemini to generate quiz JSON array
-        prompt = (
-            f"[STUDY MATERIAL]\n{db_doc.extracted_text}\n\n"
-            "Generate a 5-question multiple-choice quiz based on this study material."
-        )
-        
-        response = await quiz_model.generate_content_async(
-            contents=[prompt],
-            generation_config={"response_mime_type": "application/json"}
-        )
-
-        if not response.text:
-            raise HTTPException(status_code=502, detail="Empty response received from the quiz generator.")
-
-        questions_data = json.loads(response.text)
-        if not isinstance(questions_data, list) or len(questions_data) == 0:
-            raise ValueError("Returned JSON is not a valid list of questions.")
-
+        questions_data = await AIService.generate_quiz(db_doc.extracted_text, current_user.id, db)
+    except HTTPException:
+        raise
     except Exception as e:
-        import traceback
-        traceback.print_exc()
         raise HTTPException(
             status_code=502,
             detail=f"Failed to generate quiz: {str(e)}"

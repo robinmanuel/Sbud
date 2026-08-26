@@ -48,6 +48,13 @@ class User(Base):
         cascade="all, delete-orphan"
     )
 
+    # One-to-many relationship with AIUsage
+    ai_usages = relationship(
+        "AIUsage",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+
 class Conversation(Base):
     """
     SQLAlchemy model representing a chat conversation.
@@ -227,3 +234,39 @@ class StudentProgress(Base):
 
     # Reference back to the parent user
     user = relationship("User", back_populates="progress_records")
+
+
+class AIUsage(Base):
+    """
+    SQLAlchemy model representing API token usage logs for AI calls.
+    """
+    __tablename__ = "ai_usage"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    feature = Column(String, nullable=False) # 'chat', 'quiz_generation', 'summaries'
+    model = Column(String, nullable=False) # e.g. 'gemini-3.6-flash'
+    input_tokens = Column(Integer, default=0, nullable=False)
+    output_tokens = Column(Integer, default=0, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Reference back to the parent user
+    user = relationship("User", back_populates="ai_usages")
+
+
+class AICache(Base):
+    """
+    SQLAlchemy model representing a cache repository for static AI generation responses.
+    """
+    __tablename__ = "ai_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    prompt_hash = Column(String, unique=True, index=True, nullable=False)
+    prompt = Column(Text, nullable=False)
+    response = Column(Text, nullable=False)
+    feature = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

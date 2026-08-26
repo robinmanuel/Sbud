@@ -52,10 +52,15 @@ def mock_gemini():
     # Assign the mock model to the application
     main.model = mock_model
     
+    # Also assign to AIService for refactored calls
+    from app.ai_service import AIService
+    AIService.mock_model = mock_model
+    
     yield mock_model
     
-    # Restore the original model
+    # Restore the original models
     main.model = original_model
+    AIService.mock_model = None
 
 @pytest.fixture
 def auth_headers():
@@ -602,4 +607,126 @@ def test_chat_receives_progress_context(mock_gemini, auth_headers):
     assert "[STUDENT PROGRESS & PERFORMANCE]" in last_message
     assert "Physics > Momentum: 0% accuracy" in last_message
     assert "⚠️ Weak" in last_message
+
+
+# =====================================================================
+# AI Usage Control, Rate Limiting, Caching Tests
+# =====================================================================
+
+def test_ai_usage_logging_and_rate_limiting(mock_gemini, auth_headers):
+    """
+    Test that AI requests are correctly logged in AIUsage model
+    and that rolling hourly rate limits are enforced.
+    """
+    from datetime import datetime
+    db = TestingSessionLocal()
+    user = db.query(models.User).filter_by(email="testuser@example.com").first()
+
+    # 1. Mock Gemini Response
+    mock_response = MagicMock()
+    mock_response.text = "Hello! I am your AI study assistant."
+    
+    mock_usage = MagicMock()
+    mock_usage.prompt_token_count = 10
+    mock_usage.candidates_token_count = 15
+    mock_response.usage_metadata = mock_usage
+    mock_gemini.generate_content_async.return_value = mock_response
+
+    # 2. Call chat endpoint and assert successful response
+    payload = {
+        "messages": [
+            {"role": "user", "content": "Hello assist me please."}
+        ]
+    }
+    response = client.post("/chat", json=payload, headers=auth_headers)
+    assert response.status_code == 200
+    assert response.json()["reply"] == "Hello! I am your AI study assistant."
+
+    # 3. Verify a usage record was logged in the DB
+    usage_log = db.query(models.AIUsage).filter_by(user_id=user.id, feature="chat").first()
+    assert usage_log is not None
+    assert usage_log.model == "gemini-3.6-flash"
+    assert usage_log.input_tokens == 10
+    assert usage_log.output_tokens == 15
+
+    # 4. Trigger Rate Limit: chat limit is 20 per hour.
+    # Insert 20 fake usage records to trigger rate limits.
+    for _ in range(20):
+        db.add(models.AIUsage(
+            user_id=user.id,
+            feature="chat",
+            model="gemini-3.6-flash",
+            input_tokens=10,
+            output_tokens=15,
+            created_at=datetime.utcnow()
+        ))
+    db.commit()
+
+    # Call endpoint again - should raise 429 Too Many Requests
+    response = client.post("/chat", json=payload, headers=auth_headers)
+    assert response.status_code == 429
+    assert "Rate limit exceeded" in response.json()["detail"]
+    db.close()
+
+
+def test_ai_response_caching(mock_gemini, auth_headers):
+    """
+    Test that static features like quiz generation cache their AI responses,
+    preventing duplicate AI invocations for identical document content.
+    """
+    import json
+    db = TestingSessionLocal()
+    user = db.query(models.User).filter_by(email="testuser@example.com").first()
+
+    # 1. Insert a study document
+    doc = models.Document(
+        user_id=user.id,
+        filename="biology.pdf",
+        file_type="application/pdf",
+        file_size=2048,
+        extracted_text="Mitochondria are the powerhouses of the cell. They generate ATP."
+    )
+    db.add(doc)
+    db.commit()
+    doc_id = doc.id
+
+    # 2. Mock Gemini Response for quiz generation
+    mock_response = MagicMock()
+    quiz_data = [
+        {
+            "question": "What is the function of mitochondria?",
+            "options": ["A. Generate ATP", "B. Synthesize lipids", "C. Photosynthesis", "D. Store water"],
+            "correct_answer": "A",
+            "explanation": "Mitochondria produce ATP through cellular respiration.",
+            "subject": "Biology",
+            "topic": "Cell Biology"
+        }
+    ]
+    mock_response.text = json.dumps(quiz_data)
+    mock_usage = MagicMock()
+    mock_usage.prompt_token_count = 20
+    mock_usage.candidates_token_count = 40
+    mock_response.usage_metadata = mock_usage
+    mock_gemini.generate_content_async.return_value = mock_response
+
+    # Reset mock call counter
+    mock_gemini.generate_content_async.reset_mock()
+
+    # 3. Call quiz generation for the first time (Cache Miss)
+    resp1 = client.post("/quizzes", json={"document_id": doc_id}, headers=auth_headers)
+    assert resp1.status_code == 201
+    assert mock_gemini.generate_content_async.call_count == 1
+
+    # Verify response is cached in database
+    cached = db.query(models.AICache).filter_by(feature="quiz_generation").first()
+    assert cached is not None
+    assert json.loads(cached.response) == quiz_data
+
+    # 4. Call quiz generation a second time for the same document (Cache Hit)
+    resp2 = client.post("/quizzes", json={"document_id": doc_id}, headers=auth_headers)
+    assert resp2.status_code == 201
+    
+    # Assert that the Gemini API call count is STILL 1 (did not make a new call!)
+    assert mock_gemini.generate_content_async.call_count == 1
+    db.close()
 
