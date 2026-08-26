@@ -5,7 +5,7 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import styles from "./AppShell.module.css";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = typeof window !== "undefined" ? `http://${window.location.hostname}:8000` : "http://localhost:8000";
 
 interface AppShellProps {
   children: React.ReactNode;

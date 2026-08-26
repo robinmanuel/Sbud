@@ -7,7 +7,7 @@ import { Message, MessageProps } from "@/components/Message";
 import { ChatInput } from "@/components/ChatInput";
 import styles from "@/components/Chat.module.css";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = typeof window !== "undefined" ? `http://${window.location.hostname}:8000` : "http://localhost:8000";
 
 interface Conversation {
   id: number;

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import styles from "./materials.module.css";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = typeof window !== "undefined" ? `http://${window.location.hostname}:8000` : "http://localhost:8000";
 
 interface StudyDocument {
   id: number;

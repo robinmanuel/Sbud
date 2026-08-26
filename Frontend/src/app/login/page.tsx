@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import styles from "./login.module.css";
 
-const API_BASE = "http://localhost:8000";
+const API_BASE = typeof window !== "undefined" ? `http://${window.location.hostname}:8000` : "http://localhost:8000";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
