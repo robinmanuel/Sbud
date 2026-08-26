@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import AppShell from "@/components/AppShell";
 import styles from "./progress.module.css";
 
 const API_BASE = "http://localhost:8000";
@@ -92,35 +93,9 @@ export default function ProgressPage() {
     fetchProgress();
   }, [router]);
 
-  const handleBackToTutor = () => {
-    router.push("/");
-  };
-
   return (
-    <div className={styles.container}>
-      <div className={styles.glow} />
+    <AppShell>
       <div className={styles.card}>
-        <div className={styles.header}>
-          <h1 className={styles.title}>Your Progress</h1>
-          <button className={styles.backBtn} onClick={handleBackToTutor}>
-            <svg
-              className={styles.backIcon}
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              viewBox="0 0 24 24"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18"
-              />
-            </svg>
-            <span>Back to Tutor</span>
-          </button>
-        </div>
-
         {loading ? (
           <div className={styles.loadingContainer}>
             <div className={styles.spinner} />
@@ -129,8 +104,8 @@ export default function ProgressPage() {
         ) : error ? (
           <div className={styles.emptyState}>
             <p className={styles.emptyText}>{error}</p>
-            <button className={styles.studyBtn} onClick={handleBackToTutor}>
-              Return to Chat
+            <button className={styles.studyBtn} onClick={() => router.push("/")}>
+              Return to Dashboard
             </button>
           </div>
         ) : subjects.length === 0 ? (
@@ -155,7 +130,7 @@ export default function ProgressPage() {
             <p className={styles.emptyText}>
               Once you generate and submit quizzes from your study guides, your topic statistics will appear here.
             </p>
-            <button className={styles.studyBtn} onClick={handleBackToTutor}>
+            <button className={styles.studyBtn} onClick={() => router.push("/quizzes")}>
               Start Studying Now
             </button>
           </div>
@@ -208,6 +183,6 @@ export default function ProgressPage() {
           ))
         )}
       </div>
-    </div>
+    </AppShell>
   );
 }
