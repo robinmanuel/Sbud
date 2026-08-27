@@ -52,6 +52,7 @@ export default function DashboardPage() {
   const [documents, setDocuments] = useState<StudyDocument[]>([]);
   const [progress, setProgress] = useState<ProgressRecord[]>([]);
   const [userName, setUserName] = useState<string>("Student");
+  const [learningGoals, setLearningGoals] = useState<any[]>([]);
   
   // Local storage state keys
   const [studyBlocks, setStudyBlocks] = useState<StudyBoxItem[]>([]);
@@ -98,6 +99,32 @@ export default function DashboardPage() {
         if (progressResp.ok) {
           const progressData = await progressResp.json();
           setProgress(progressData);
+        }
+
+        // Get Learning Goals list
+        const goalsResp = await fetch(`${API_BASE}/learning-goals`, {
+          method: "GET",
+          credentials: "include",
+        });
+        if (goalsResp.ok) {
+          const goalsData = await goalsResp.json();
+          const detailedGoals = await Promise.all(
+            goalsData.slice(0, 3).map(async (goal: any) => {
+              try {
+                const detailResp = await fetch(`${API_BASE}/learning-goals/${goal.id}`, {
+                  method: "GET",
+                  credentials: "include",
+                });
+                if (detailResp.ok) {
+                  return await detailResp.json();
+                }
+              } catch (e) {
+                console.error("Failed to load details for goal", goal.id, e);
+              }
+              return goal;
+            })
+          );
+          setLearningGoals(detailedGoals);
         }
       } catch (err) {
         console.error("Failed to load dashboard metrics:", err);
@@ -273,6 +300,39 @@ export default function DashboardPage() {
           <h1 className={styles.greeting}>Good day, {userName}</h1>
           <p className={styles.subGreeting}>Let's dive into your targets and build accuracy today.</p>
         </div>
+
+        {/* Learning Goals Dashboard Overview */}
+        {learningGoals.length > 0 && (
+          <div className={styles.goalsOverviewSection}>
+            <div className={styles.goalsOverviewHeader}>
+              <h2 className={styles.sectionTitle}>🎯 Active Learning Goals</h2>
+              <span className={styles.cardLink} onClick={() => router.push("/goals")}>Manage Targets</span>
+            </div>
+            <div className={styles.goalsGrid}>
+              {learningGoals.map((goal) => {
+                const totalTopics = goal.topics?.length || 0;
+                const masteredTopics = goal.topics?.filter((t: any) => t.mastery_status === "Mastered").length || 0;
+                const percent = totalTopics > 0 ? (masteredTopics / totalTopics) * 100 : 0;
+                return (
+                  <div key={goal.id} className={styles.goalCard} onClick={() => router.push("/goals")}>
+                    <div className={styles.goalCardTop}>
+                      <span className={styles.goalCardTitle} title={goal.title}>{goal.title}</span>
+                      <span className={styles.goalCardProgress}>
+                        {masteredTopics} / {totalTopics} Mastered
+                      </span>
+                    </div>
+                    <div className={styles.goalProgressBar}>
+                      <div 
+                        className={styles.goalProgressFill} 
+                        style={{ width: `${percent}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         <div className={styles.grid}>
           {/* Left Column */}

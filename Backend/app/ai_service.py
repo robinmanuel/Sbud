@@ -50,6 +50,18 @@ QUIZ_GENERATOR_INSTRUCTION = (
     "3. Keep the questions focused on testing key conceptual understanding rather than trivial details."
 )
 
+GOAL_GENERATOR_INSTRUCTION = (
+    "You are an expert curriculum planner and study coach. Your task is to analyze a student's learning target "
+    "and/or uploaded study materials, and decompose it into a structured learning goal and a set of 4 to 8 distinct, key topics/concepts to master.\n\n"
+    "Generate a JSON object matching the following output constraints:\n"
+    "1. Output MUST be a valid JSON object. Do not include markdown code fence formatting (like ```json ... ```) in your raw response.\n"
+    "2. The object MUST contain the following keys exactly:\n"
+    "   - \"goal_title\": A concise, polished, and standardized title for the learning goal (e.g. \"Python Programming Basics\" or \"AP Calculus Preparation\").\n"
+    "   - \"topics\": A JSON array of 4 to 8 distinct string subtopics/concepts that represent the core pillars of this goal (e.g., [\"Variables\", \"Functions\", \"Loops\"]). Each subtopic name must be very short, concise, and clear (1-3 words max).\n"
+    "   - \"description\": A brief, encouraging 1-2 sentence description summarizing the target scope.\n"
+    "3. Focus on logical, step-by-step breakdown of concepts needed to answer: 'Does this student actually know this?'"
+)
+
 class AIService:
     mock_model = None
 
@@ -74,6 +86,11 @@ class AIService:
             return genai.GenerativeModel(
                 "gemini-3.6-flash",
                 system_instruction=QUIZ_GENERATOR_INSTRUCTION
+            )
+        elif feature == "goal_generation":
+            return genai.GenerativeModel(
+                "gemini-3.6-flash",
+                system_instruction=GOAL_GENERATOR_INSTRUCTION
             )
         else:
             return genai.GenerativeModel(
@@ -200,7 +217,7 @@ class AIService:
             )
 
     @classmethod
-    async def generate_quiz(cls, document_text: str, user_id: int, db: Session) -> list:
+    async def generate_quiz(cls, document_text: str, user_id: int, db: Session, topics: Optional[List[str]] = None) -> list:
         """
         Generates study quizzes from document texts, supporting caching and usage checks.
         """
@@ -210,7 +227,11 @@ class AIService:
         cls.check_rate_limit(user_id, feature, db)
 
         # 2. Check Cache
-        cached_result = cls.get_cached_response(document_text, feature, db)
+        # Include topics in cache key if provided
+        cache_key = document_text
+        if topics:
+            cache_key += f"\ntopics:{','.join(topics)}"
+        cached_result = cls.get_cached_response(cache_key, feature, db)
         if cached_result:
             return json.loads(cached_result)
 
@@ -218,9 +239,17 @@ class AIService:
         model_instance = cls.get_model(feature)
         model_name = "gemini-3.6-flash"
 
+        topic_instruction = ""
+        if topics:
+            topic_instruction = (
+                f"The quiz MUST focus specifically on testing comprehension of these subtopics: {', '.join(topics)}.\n"
+                "Each question must cover one of these subtopics and assign that exact subtopic name (word-for-word) to the 'topic' field in the output JSON.\n"
+            )
+
         prompt = (
             f"[STUDY MATERIAL]\n{document_text}\n\n"
-            "Generate a 5-question multiple-choice quiz based on this study material."
+            f"Generate a 5-question multiple-choice quiz based on this study material.\n"
+            f"{topic_instruction}"
         )
         approx_input = len(prompt) // 4
 
@@ -252,7 +281,7 @@ class AIService:
                     output_tokens = response.usage_metadata.candidates_token_count
 
             # 4. Save to Cache
-            cls.save_cached_response(document_text, raw_text, feature, db)
+            cls.save_cached_response(cache_key, raw_text, feature, db)
 
             # 5. Log usage metrics
             cls.log_usage(user_id, feature, model_name, input_tokens, output_tokens, db)
@@ -268,4 +297,99 @@ class AIService:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Tutor quiz generator invocation failed: {str(e)}"
+            )
+
+    @classmethod
+    async def generate_learning_goal(
+        cls,
+        user_prompt: Optional[str],
+        document_text: Optional[str],
+        user_id: int,
+        db: Session
+    ) -> dict:
+        """
+        Generates a learning goal title, description, and list of subtopics
+        from a user description (Option A), document text (Option B), or both (Option C).
+        """
+        feature = "goal_generation"
+        # Rate limiting: use the summaries rate limit as a proxy or default to summaries rate limit
+        cls.check_rate_limit(user_id, "summaries", db)
+
+        # Build prompt payload
+        prompt_parts = []
+        if user_prompt:
+            prompt_parts.append(f"STUDENT SPECIFIED TARGET: {user_prompt}")
+        if document_text:
+            # Send first 10,000 characters of the document text to avoid blowing token count on large PDFs
+            preview_text = document_text[:12000]
+            prompt_parts.append(f"EXTRACTED MATERIAL TEXT PREVIEW:\n{preview_text}")
+        
+        prompt_payload = "\n\n".join(prompt_parts)
+        if not prompt_payload.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Either a goal description or document text is required to generate a goal."
+            )
+
+        prompt = (
+            f"[INPUT SOURCE INFO]\n{prompt_payload}\n\n"
+            "Create a learning goal and decompose it into 4 to 8 key subtopics in JSON format."
+        )
+
+        # Check Cache
+        cached_result = cls.get_cached_response(prompt, feature, db)
+        if cached_result:
+            return json.loads(cached_result)
+
+        model_instance = cls.get_model(feature)
+        model_name = "gemini-3.6-flash"
+        approx_input = len(prompt) // 4
+
+        try:
+            response = await model_instance.generate_content_async(
+                contents=[prompt],
+                generation_config={"response_mime_type": "application/json"}
+            )
+            raw_text = response.text
+            if not raw_text:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail="Empty response received from the goal generator."
+                )
+
+            # Validate output is valid JSON
+            goal_data = json.loads(raw_text)
+            if "goal_title" not in goal_data or "topics" not in goal_data:
+                raise ValueError("Returned JSON is missing required fields.")
+            
+            if not isinstance(goal_data["topics"], list) or len(goal_data["topics"]) == 0:
+                raise ValueError("Topics is not a valid list.")
+
+            # Calculate tokens
+            input_tokens = approx_input
+            output_tokens = len(raw_text) // 4
+
+            if hasattr(response, "usage_metadata") and response.usage_metadata:
+                if response.usage_metadata.prompt_token_count:
+                    input_tokens = response.usage_metadata.prompt_token_count
+                if response.usage_metadata.candidates_token_count:
+                    output_tokens = response.usage_metadata.candidates_token_count
+
+            # Save to Cache
+            cls.save_cached_response(prompt, raw_text, feature, db)
+
+            # Log usage
+            cls.log_usage(user_id, "summaries", model_name, input_tokens, output_tokens, db)
+
+            return goal_data
+
+        except json.JSONDecodeError:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Tutor goal generator did not output valid JSON. Please try again."
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Tutor goal generator invocation failed: {str(e)}"
             )

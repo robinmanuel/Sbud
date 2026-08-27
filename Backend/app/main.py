@@ -877,10 +877,27 @@ async def generate_quiz(
     if not db_doc.extracted_text or not db_doc.extracted_text.strip():
         raise HTTPException(status_code=400, detail="Document has no text content to generate a quiz from.")
 
+    # Check if learning goal is specified and belongs to user
+    db_goal = None
+    target_topics = None
+    if request.learning_goal_id is not None:
+        db_goal = db.query(models.LearningGoal).filter(
+            models.LearningGoal.id == request.learning_goal_id,
+            models.LearningGoal.user_id == current_user.id
+        ).first()
+        if not db_goal:
+            raise HTTPException(status_code=404, detail="Learning goal not found")
+        target_topics = [t.name for t in db_goal.topics]
+
     # 2. Call AIService to generate quiz JSON array (handles rate limits, caching, usage logs)
     from app.ai_service import AIService
     try:
-        questions_data = await AIService.generate_quiz(db_doc.extracted_text, current_user.id, db)
+        questions_data = await AIService.generate_quiz(
+            db_doc.extracted_text,
+            current_user.id,
+            db,
+            topics=target_topics
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -893,6 +910,7 @@ async def generate_quiz(
     db_quiz = models.Quiz(
         user_id=current_user.id,
         document_id=db_doc.id,
+        learning_goal_id=request.learning_goal_id,
         title=f"{db_doc.filename.rsplit('.', 1)[0]} Quiz",
         score=None
     )
@@ -907,6 +925,17 @@ async def generate_quiz(
         if len(ans_key) > 1:
             ans_key = ans_key[0] # Fallback if model returns e.g. "A."
 
+        # Find matching topic ID if goal is provided
+        matched_topic_id = None
+        item_topic = item.get("topic", "General")
+        if db_goal:
+            item_topic_lower = item_topic.strip().lower()
+            for topic_obj in db_goal.topics:
+                tname_lower = topic_obj.name.lower()
+                if (tname_lower in item_topic_lower) or (item_topic_lower in tname_lower):
+                    matched_topic_id = topic_obj.id
+                    break
+
         db_q = models.QuizQuestion(
             quiz_id=db_quiz.id,
             question_text=item.get("question"),
@@ -915,7 +944,8 @@ async def generate_quiz(
             explanation=item.get("explanation", ""),
             student_answer=None,
             subject=item.get("subject", "General"),
-            topic=item.get("topic", "General")
+            topic=item_topic,
+            topic_id=matched_topic_id
         )
         db.add(db_q)
     
@@ -934,6 +964,7 @@ async def generate_quiz(
     return schemas.QuizResponse(
         id=db_quiz.id,
         document_id=db_quiz.document_id,
+        learning_goal_id=db_quiz.learning_goal_id,
         title=db_quiz.title,
         created_at=db_quiz.created_at,
         questions=questions_resp
@@ -966,6 +997,7 @@ def get_quiz(
     return schemas.QuizResponse(
         id=db_quiz.id,
         document_id=db_quiz.document_id,
+        learning_goal_id=db_quiz.learning_goal_id,
         title=db_quiz.title,
         created_at=db_quiz.created_at,
         questions=questions_resp
@@ -1058,6 +1090,7 @@ def submit_quiz(
     return schemas.QuizResultResponse(
         id=db_quiz.id,
         document_id=db_quiz.document_id,
+        learning_goal_id=db_quiz.learning_goal_id,
         title=db_quiz.title,
         score=score,
         total_questions=len(db_quiz.questions),
@@ -1077,4 +1110,205 @@ def get_progress(
     return db.query(models.StudentProgress).filter(
         models.StudentProgress.user_id == current_user.id
     ).all()
+
+
+# =====================================================================
+# Learning Goals Endpoints
+# =====================================================================
+
+@app.post("/learning-goals", response_model=schemas.LearningGoalResponse, status_code=201, tags=["Learning Goals"])
+async def create_learning_goal(
+    request: schemas.LearningGoalCreateRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Creates a new learning goal by decomposing user input and/or study materials
+    into 4-8 logical subtopics using the Gemini AI model.
+    """
+    doc_text = None
+    db_doc = None
+    if request.document_id is not None:
+        db_doc = db.query(models.Document).filter(
+            models.Document.id == request.document_id,
+            models.Document.user_id == current_user.id
+        ).first()
+        if not db_doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        doc_text = db_doc.extracted_text
+
+    # Call AI service to generate learning goal title, description, and topics
+    from app.ai_service import AIService
+    try:
+        goal_data = await AIService.generate_learning_goal(
+            user_prompt=request.title,
+            document_text=doc_text,
+            user_id=current_user.id,
+            db=db
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to generate learning goal details: {str(e)}"
+        )
+
+    # Use student-specified title if provided, otherwise default to AI title
+    title = request.title if (request.title and not request.document_id) else goal_data.get("goal_title", "New Goal")
+    description = request.description or goal_data.get("description", "")
+
+    # Create the Learning Goal
+    db_goal = models.LearningGoal(
+        user_id=current_user.id,
+        title=title,
+        description=description,
+        completed=0
+    )
+    db.add(db_goal)
+    db.commit()
+    db.refresh(db_goal)
+
+    # Link the document to this goal if provided
+    if db_doc:
+        db_doc.learning_goal_id = db_goal.id
+        db.commit()
+
+    # Create topics
+    topics_list = goal_data.get("topics", [])
+    for topic_name in topics_list:
+        db_topic = models.LearningGoalTopic(
+            learning_goal_id=db_goal.id,
+            name=topic_name
+        )
+        db.add(db_topic)
+    
+    db.commit()
+    db.refresh(db_goal)
+    return db_goal
+
+
+@app.get("/learning-goals", response_model=List[schemas.LearningGoalResponse], tags=["Learning Goals"])
+def list_learning_goals(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Retrieves all learning goals for the currently authenticated user.
+    """
+    return db.query(models.LearningGoal).filter(
+        models.LearningGoal.user_id == current_user.id
+    ).order_by(models.LearningGoal.created_at.desc()).all()
+
+
+@app.get("/learning-goals/{goal_id}", response_model=schemas.LearningGoalDetailResponse, tags=["Learning Goals"])
+def get_learning_goal(
+    goal_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Retrieves detailed info for a specific learning goal, including dynamic topic mastery statistics,
+    attached documents, and associated quizzes.
+    """
+    db_goal = db.query(models.LearningGoal).filter(
+        models.LearningGoal.id == goal_id,
+        models.LearningGoal.user_id == current_user.id
+    ).first()
+    if not db_goal:
+        raise HTTPException(status_code=404, detail="Learning goal not found")
+
+    # Fetch document and quiz IDs
+    doc_ids = [d.id for d in db_goal.documents]
+    quiz_ids = [q.id for q in db_goal.quizzes]
+
+    # Calculate topic mastery/progress details
+    topic_details = []
+    goal_completed = True if len(db_goal.topics) > 0 else False
+
+    for topic in db_goal.topics:
+        # Query quiz questions matching this topic_id
+        questions = db.query(models.QuizQuestion).filter(
+            models.QuizQuestion.topic_id == topic.id
+        ).all()
+
+        attempted = 0
+        correct = 0
+        for q in questions:
+            if q.student_answer in ["A", "B", "C", "D"]:
+                attempted += 1
+                if q.student_answer == q.correct_answer:
+                    correct += 1
+
+        accuracy = (correct / attempted) * 100.0 if attempted > 0 else 0.0
+
+        # Mastery calculation:
+        # Not Started: 0 attempts
+        # Mastered: Accuracy >= 80%
+        # Needs Practice: Accuracy < 70%
+        # Reviewing: Accuracy between 70% and 79%
+        if attempted == 0:
+            status = "Not Started"
+            goal_completed = False
+        elif accuracy >= 80.0:
+            status = "Mastered"
+        elif accuracy < 70.0:
+            status = "Needs Practice"
+            goal_completed = False
+        else:
+            status = "Reviewing"
+            goal_completed = False
+
+        topic_details.append(
+            schemas.TopicProgressDetail(
+                id=topic.id,
+                name=topic.name,
+                questions_attempted=attempted,
+                questions_correct=correct,
+                accuracy=accuracy,
+                mastery_status=status
+            )
+        )
+
+    # Check if the goal should be marked completed
+    if goal_completed and db_goal.completed == 0:
+        db_goal.completed = 1
+        db.commit()
+    elif not goal_completed and db_goal.completed == 1:
+        db_goal.completed = 0
+        db.commit()
+
+    return schemas.LearningGoalDetailResponse(
+        id=db_goal.id,
+        user_id=db_goal.user_id,
+        title=db_goal.title,
+        description=db_goal.description,
+        completed=(db_goal.completed == 1),
+        created_at=db_goal.created_at,
+        topics=topic_details,
+        document_ids=doc_ids,
+        quiz_ids=quiz_ids
+    )
+
+
+@app.delete("/learning-goals/{goal_id}", tags=["Learning Goals"])
+def delete_learning_goal(
+    goal_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Deletes a specific learning goal, verifying owner authorization.
+    """
+    db_goal = db.query(models.LearningGoal).filter(
+        models.LearningGoal.id == goal_id,
+        models.LearningGoal.user_id == current_user.id
+    ).first()
+    if not db_goal:
+        raise HTTPException(status_code=404, detail="Learning goal not found")
+
+    db.delete(db_goal)
+    db.commit()
+    return {"message": "Learning goal deleted successfully"}
+
 

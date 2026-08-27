@@ -55,6 +55,13 @@ class User(Base):
         cascade="all, delete-orphan"
     )
 
+    # One-to-many relationship with LearningGoal
+    learning_goals = relationship(
+        "LearningGoal",
+        back_populates="user",
+        cascade="all, delete-orphan"
+    )
+
 class Conversation(Base):
     """
     SQLAlchemy model representing a chat conversation.
@@ -119,8 +126,17 @@ class Document(Base):
     extracted_text = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+    learning_goal_id = Column(
+        Integer,
+        ForeignKey("learning_goals.id", ondelete="SET NULL"),
+        nullable=True
+    )
+
     # Reference back to parent user
     user = relationship("User", back_populates="documents")
+
+    # Reference to learning goal
+    learning_goal = relationship("LearningGoal", back_populates="documents")
 
     # One-to-many relationship with DocumentChunk
     chunks = relationship(
@@ -181,9 +197,16 @@ class Quiz(Base):
     score = Column(Integer, nullable=True) # None until submitted/graded
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
+    learning_goal_id = Column(
+        Integer,
+        ForeignKey("learning_goals.id", ondelete="SET NULL"),
+        nullable=True
+    )
+
     # Reference parent models
     user = relationship("User", back_populates="quizzes")
     document = relationship("Document", back_populates="quizzes")
+    learning_goal = relationship("LearningGoal", back_populates="quizzes")
     
     # Child relationship
     questions = relationship("QuizQuestion", back_populates="quiz", cascade="all, delete-orphan")
@@ -209,8 +232,15 @@ class QuizQuestion(Base):
     subject = Column(String, nullable=True) # E.g. "Physics"
     topic = Column(String, nullable=True) # E.g. "Newton's Laws"
 
+    topic_id = Column(
+        Integer,
+        ForeignKey("learning_goal_topics.id", ondelete="SET NULL"),
+        nullable=True
+    )
+
     # Parent relationship
     quiz = relationship("Quiz", back_populates="questions")
+    topic_relation = relationship("LearningGoalTopic")
 
 
 class StudentProgress(Base):
@@ -270,3 +300,49 @@ class AICache(Base):
     response = Column(Text, nullable=False)
     feature = Column(String, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+
+class LearningGoal(Base):
+    """
+    SQLAlchemy model representing a high-level learning goal (e.g., 'Learn Python').
+    """
+    __tablename__ = "learning_goals"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    completed = Column(Integer, default=0, nullable=False) # 0 for false, 1 for true
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Reference back to user
+    user = relationship("User", back_populates="learning_goals")
+    
+    # Child relationships
+    topics = relationship("LearningGoalTopic", back_populates="learning_goal", cascade="all, delete-orphan")
+    documents = relationship("Document", back_populates="learning_goal")
+    quizzes = relationship("Quiz", back_populates="learning_goal")
+
+
+class LearningGoalTopic(Base):
+    """
+    SQLAlchemy model representing subtopics under a learning goal.
+    """
+    __tablename__ = "learning_goal_topics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    learning_goal_id = Column(
+        Integer,
+        ForeignKey("learning_goals.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    name = Column(String, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    # Reference back to parent goal
+    learning_goal = relationship("LearningGoal", back_populates="topics")
+

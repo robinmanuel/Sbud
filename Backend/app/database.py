@@ -116,3 +116,34 @@ def init_db():
     # Import models to register them on Base.metadata
     from app import models
     Base.metadata.create_all(bind=engine)
+
+    # Lightweight auto-migration: Add new columns if they do not exist
+    try:
+        from sqlalchemy import text
+        with engine.connect() as conn:
+            # 1. Add learning_goal_id to documents
+            try:
+                conn.execute(text("ALTER TABLE documents ADD COLUMN learning_goal_id INTEGER;"))
+                conn.commit()
+                print("Migration: Added learning_goal_id to documents table.")
+            except Exception:
+                pass # Already exists
+
+            # 2. Add learning_goal_id to quizzes
+            try:
+                conn.execute(text("ALTER TABLE quizzes ADD COLUMN learning_goal_id INTEGER;"))
+                conn.commit()
+                print("Migration: Added learning_goal_id to quizzes table.")
+            except Exception:
+                pass # Already exists
+
+            # 3. Add topic_id to quiz_questions
+            try:
+                conn.execute(text("ALTER TABLE quiz_questions ADD COLUMN topic_id INTEGER;"))
+                conn.commit()
+                print("Migration: Added topic_id to quiz_questions table.")
+            except Exception:
+                pass # Already exists
+    except Exception as e:
+        print(f"WARNING: Database auto-migration failed: {e}")
+

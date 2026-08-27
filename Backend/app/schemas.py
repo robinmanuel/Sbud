@@ -86,6 +86,7 @@ class DocumentResponse(BaseModel):
     filename: str
     file_type: str
     file_size: int
+    learning_goal_id: Optional[int] = None
     created_at: datetime
 
     model_config = {
@@ -117,6 +118,7 @@ class ChunkSearchResponse(BaseModel):
 
 class QuizCreateRequest(BaseModel):
     document_id: int
+    learning_goal_id: Optional[int] = None
 
 class QuizQuestionResponse(BaseModel):
     id: int
@@ -127,6 +129,7 @@ class QuizResponse(BaseModel):
     id: int
     document_id: int
     title: str
+    learning_goal_id: Optional[int] = None
     created_at: datetime
     questions: List[QuizQuestionResponse]
 
@@ -154,6 +157,7 @@ class QuizResultResponse(BaseModel):
     title: str
     score: int
     total_questions: int
+    learning_goal_id: Optional[int] = None
     created_at: datetime
     questions: List[GradedQuestionResponse]
 
@@ -174,4 +178,61 @@ class StudentProgressResponse(BaseModel):
     model_config = {
         "from_attributes": True
     }
+
+
+class LearningGoalTopicResponse(BaseModel):
+    id: int
+    learning_goal_id: int
+    name: str
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
+
+
+class LearningGoalCreateRequest(BaseModel):
+    title: Optional[str] = Field(None, description="The high-level learning goal topic/exam/subject")
+    description: Optional[str] = Field(None, description="Additional notes or constraints")
+    document_id: Optional[int] = Field(None, description="Optional uploaded document to extract topics from")
+
+
+class LearningGoalResponse(BaseModel):
+    id: int
+    user_id: int
+    title: str
+    description: Optional[str] = None
+    completed: bool
+    created_at: datetime
+    topics: List[LearningGoalTopicResponse]
+
+    model_config = {
+        "from_attributes": True
+    }
+
+
+class TopicProgressDetail(BaseModel):
+    id: int
+    name: str
+    questions_attempted: int
+    questions_correct: int
+    accuracy: float
+    mastery_status: str # "Not Started" | "Mastered" | "Reviewing" | "Needs Practice"
+
+
+class LearningGoalDetailResponse(BaseModel):
+    id: int
+    user_id: int
+    title: str
+    description: Optional[str] = None
+    completed: bool
+    created_at: datetime
+    topics: List[TopicProgressDetail]
+    document_ids: List[int]
+    quiz_ids: List[int]
+
+    model_config = {
+        "from_attributes": True
+    }
+
 
