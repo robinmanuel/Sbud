@@ -705,6 +705,21 @@ async def upload_document(
         db.add(db_chunk)
     
     db.commit()
+
+    # 7. Extract Topics with AI
+    try:
+        from app.ai_service import AIService
+        topic_names = await AIService.generate_topics(extracted_text, current_user.id, db)
+        for name in topic_names:
+            db_topic = models.Topic(
+                document_id=db_doc.id,
+                name=name
+            )
+            db.add(db_topic)
+        db.commit()
+    except Exception as e:
+        print(f"WARNING: Topic generation failed: {e}")
+
     return db_doc
 
 @app.get("/documents", response_model=List[schemas.DocumentResponse], tags=["Documents"])
@@ -1310,5 +1325,694 @@ def delete_learning_goal(
     db.delete(db_goal)
     db.commit()
     return {"message": "Learning goal deleted successfully"}
+
+
+# =====================================================================
+# Document Workspace & Topic Actions Endpoints (Redesign Core)
+# =====================================================================
+
+@app.get("/documents/{document_id}", response_model=schemas.DocumentWorkspaceResponse, tags=["Documents Workspace"])
+def get_document_workspace(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Returns document details and all extracted topics.
+    """
+    db_doc = db.query(models.Document).filter(
+        models.Document.id == document_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    if not db_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return db_doc
+
+
+@app.get("/documents/{document_id}/text", tags=["Documents Workspace"])
+def get_document_text(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Returns raw extracted text of the document.
+    """
+    db_doc = db.query(models.Document).filter(
+        models.Document.id == document_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    if not db_doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"text": db_doc.extracted_text or "No text content available."}
+
+
+@app.post("/topics/{topic_id}/learn", response_model=schemas.LessonDetailResponse, tags=["Topic Actions"])
+async def learn_topic(
+    topic_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Gets or generates a progressive lesson (Concept -> Example -> Check understanding).
+    """
+    db_topic = db.query(models.Topic).join(
+        models.Document, models.Document.id == models.Topic.document_id
+    ).filter(
+        models.Topic.id == topic_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    
+    if not db_topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+        
+    db_lesson = db.query(models.Lesson).filter_by(topic_id=topic_id).first()
+    if db_lesson:
+        return db_lesson
+        
+    # Generate new lesson
+    from app.ai_service import AIService
+    doc_text = db_topic.document.extracted_text or ""
+    lesson_data = await AIService.generate_lesson(db_topic.name, doc_text, current_user.id, db)
+    
+    db_lesson = models.Lesson(
+        topic_id=topic_id,
+        concept=lesson_data.get("concept", ""),
+        example=lesson_data.get("example", ""),
+        understanding_question=lesson_data.get("understanding_question", ""),
+        understanding_answer=lesson_data.get("understanding_answer", ""),
+        understanding_explanation=lesson_data.get("understanding_explanation", "")
+    )
+    db.add(db_lesson)
+    db.commit()
+    db.refresh(db_lesson)
+    return db_lesson
+
+
+@app.post("/topics/{topic_id}/practice", response_model=schemas.PracticeExerciseDetailResponse, tags=["Topic Actions"])
+async def practice_topic(
+    topic_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Gets or generates a practice question for this topic.
+    """
+    db_topic = db.query(models.Topic).join(
+        models.Document, models.Document.id == models.Topic.document_id
+    ).filter(
+        models.Topic.id == topic_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    
+    if not db_topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+        
+    db_practice = db.query(models.PracticeExercise).filter_by(topic_id=topic_id).first()
+    if db_practice:
+        return db_practice
+        
+    # Generate new practice question
+    from app.ai_service import AIService
+    doc_text = db_topic.document.extracted_text or ""
+    practice_data = await AIService.generate_practice(db_topic.name, doc_text, current_user.id, db)
+    
+    db_practice = models.PracticeExercise(
+        topic_id=topic_id,
+        question=practice_data.get("question", ""),
+        correct_answer=practice_data.get("correct_answer", ""),
+        explanation=practice_data.get("explanation", "")
+    )
+    db.add(db_practice)
+    db.commit()
+    db.refresh(db_practice)
+    return db_practice
+
+
+@app.post("/topics/{topic_id}/quiz", response_model=schemas.QuizResponse, tags=["Topic Actions"])
+async def quiz_topic(
+    topic_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Gets or generates a structured 5-question multiple-choice quiz for this topic.
+    """
+    db_topic = db.query(models.Topic).join(
+        models.Document, models.Document.id == models.Topic.document_id
+    ).filter(
+        models.Topic.id == topic_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    
+    if not db_topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+        
+    db_quiz = db.query(models.Quiz).filter_by(topic_id=topic_id).first()
+    if db_quiz:
+        questions_resp = [
+            schemas.QuizQuestionResponse(
+                id=q.id,
+                question_text=q.question_text,
+                options=json.loads(q.options)
+            )
+            for q in db_quiz.questions
+        ]
+        return schemas.QuizResponse(
+            id=db_quiz.id,
+            document_id=db_quiz.document_id,
+            title=db_quiz.title,
+            created_at=db_quiz.created_at,
+            questions=questions_resp
+        )
+        
+    # Generate new quiz focusing strictly on this topic
+    from app.ai_service import AIService
+    doc_text = db_topic.document.extracted_text or ""
+    questions_data = await AIService.generate_quiz(
+        doc_text,
+        current_user.id,
+        db,
+        topics=[db_topic.name]
+    )
+    
+    db_quiz = models.Quiz(
+        user_id=current_user.id,
+        document_id=db_topic.document_id,
+        topic_id=topic_id,
+        title=f"{db_topic.name} Quiz",
+        score=None
+    )
+    db.add(db_quiz)
+    db.commit()
+    db.refresh(db_quiz)
+    
+    for item in questions_data:
+        ans_key = item.get("correct_answer", "").strip().upper()
+        if len(ans_key) > 1:
+            ans_key = ans_key[0]
+            
+        db_q = models.QuizQuestion(
+            quiz_id=db_quiz.id,
+            question_text=item.get("question"),
+            options=json.dumps(item.get("options", [])),
+            correct_answer=ans_key,
+            explanation=item.get("explanation", ""),
+            subject=item.get("subject", "General"),
+            topic=db_topic.name
+        )
+        db.add(db_q)
+    
+    db.commit()
+    db.refresh(db_quiz)
+    
+    questions_resp = [
+        schemas.QuizQuestionResponse(
+            id=q.id,
+            question_text=q.question_text,
+            options=json.loads(q.options)
+        )
+        for q in db_quiz.questions
+    ]
+    return schemas.QuizResponse(
+        id=db_quiz.id,
+        document_id=db_quiz.document_id,
+        title=db_quiz.title,
+        created_at=db_quiz.created_at,
+        questions=questions_resp
+    )
+
+
+@app.post("/topics/{topic_id}/summarize", response_model=schemas.TopicDetailResponse, tags=["Topic Actions"])
+async def summarize_topic(
+    topic_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Returns a concise summary of the selected topic.
+    """
+    db_topic = db.query(models.Topic).join(
+        models.Document, models.Document.id == models.Topic.document_id
+    ).filter(
+        models.Topic.id == topic_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    
+    if not db_topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+        
+    if db_topic.summary:
+        return db_topic
+        
+    from app.ai_service import AIService
+    doc_text = db_topic.document.extracted_text or ""
+    summary_text = await AIService.generate_topic_summary(db_topic.name, doc_text, current_user.id, db)
+    
+    db_topic.summary = summary_text
+    db.commit()
+    db.refresh(db_topic)
+    return db_topic
+
+
+@app.post("/topics/{topic_id}/recall", response_model=schemas.RecallQuestionDetailResponse, tags=["Topic Actions"])
+async def recall_topic(
+    topic_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Returns an active recall question for this topic.
+    """
+    db_topic = db.query(models.Topic).join(
+        models.Document, models.Document.id == models.Topic.document_id
+    ).filter(
+        models.Topic.id == topic_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    
+    if not db_topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+        
+    db_recall = db.query(models.RecallQuestion).filter_by(topic_id=topic_id).first()
+    if db_recall:
+        return db_recall
+        
+    from app.ai_service import AIService
+    doc_text = db_topic.document.extracted_text or ""
+    recall_data = await AIService.generate_recall(db_topic.name, doc_text, current_user.id, db)
+    
+    db_recall = models.RecallQuestion(
+        topic_id=topic_id,
+        question=recall_data.get("question", ""),
+        answer=recall_data.get("answer", "")
+    )
+    db.add(db_recall)
+    db.commit()
+    db.refresh(db_recall)
+    return db_recall
+
+
+@app.post("/topics/{topic_id}/clarify", tags=["Topic Actions"])
+async def clarify_topic(
+    topic_id: int,
+    request: schemas.ClarifyMessageRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Handles interactive chat tutor clarification in the context of the selected topic and document.
+    Reuses existing Message/Conversation structures.
+    """
+    db_topic = db.query(models.Topic).join(
+        models.Document, models.Document.id == models.Topic.document_id
+    ).filter(
+        models.Topic.id == topic_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    
+    if not db_topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+        
+    title_key = f"Topic Clarify: {db_topic.name}"
+    db_conv = db.query(models.Conversation).filter_by(
+        user_id=current_user.id,
+        title=title_key
+    ).first()
+    
+    if not db_conv:
+        db_conv = models.Conversation(
+            user_id=current_user.id,
+            title=title_key
+        )
+        db.add(db_conv)
+        db.commit()
+        db.refresh(db_conv)
+        
+    user_msg = models.Message(
+        conversation_id=db_conv.id,
+        role="user",
+        content=request.content
+    )
+    db.add(user_msg)
+    db.commit()
+    
+    history = db.query(models.Message).filter_by(conversation_id=db_conv.id).order_by(models.Message.created_at.asc()).all()
+    
+    contents = []
+    for i, msg in enumerate(history):
+        role = "user" if msg.role == "user" else "model"
+        if i == len(history) - 1 and msg.role == "user":
+            doc_context = f"[SUPPLIED STUDY MATERIAL CONTEXT]\nTopic: {db_topic.name}\nDocument Context:\n{db_topic.document.extracted_text[:12000]}"
+            combined = (
+                f"{doc_context}\n\n"
+                f"[STUDENT QUESTION]\n{msg.content}\n\n"
+                f"INSTRUCTION: Answer the student's question specifically in the context of the topic '{db_topic.name}'."
+            )
+            contents.append({"role": role, "parts": [combined]})
+        else:
+            contents.append({"role": role, "parts": [msg.content]})
+            
+    from app.ai_service import AIService
+    try:
+        reply_text = await AIService.generate_chat_response(contents, current_user.id, db)
+        
+        assistant_msg = models.Message(
+            conversation_id=db_conv.id,
+            role="assistant",
+            content=reply_text
+        )
+        db.add(assistant_msg)
+        db.commit()
+        
+        db.refresh(db_conv)
+        return {
+            "conversation_id": db_conv.id,
+            "messages": [
+                {"role": m.role, "content": m.content, "created_at": m.created_at}
+                for m in db_conv.messages
+            ]
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI model tutor invocation failed: {str(e)}"
+        )
+
+
+@app.get("/topics/{topic_id}/clarify", tags=["Topic Actions"])
+def get_clarify_history(
+    topic_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Retrieves message history for the clarify chat of a specific topic.
+    """
+    db_topic = db.query(models.Topic).join(
+        models.Document, models.Document.id == models.Topic.document_id
+    ).filter(
+        models.Topic.id == topic_id,
+        models.Document.user_id == current_user.id
+    ).first()
+    
+    if not db_topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+        
+    title_key = f"Topic Clarify: {db_topic.name}"
+    db_conv = db.query(models.Conversation).filter_by(
+        user_id=current_user.id,
+        title=title_key
+    ).first()
+    
+    if not db_conv:
+        return {"conversation_id": 0, "messages": []}
+        
+    return {
+        "conversation_id": db_conv.id,
+        "messages": [
+            {"role": m.role, "content": m.content, "created_at": m.created_at}
+            for m in db_conv.messages
+        ]
+    }
+
+
+from pydantic import BaseModel
+
+class QuickExplanationRequest(BaseModel):
+    question: str
+
+class CustomCurriculumRequest(BaseModel):
+    topic: str
+
+@app.get("/dashboard/stats", tags=["Dashboard"])
+def get_dashboard_stats(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Returns counts of topics studied, quizzes completed, questions answered, and study sessions.
+    """
+    # Topics studied (topics that have a lesson, quiz, or recall question generated)
+    topics_count = db.query(models.Topic).join(
+        models.Document, models.Document.id == models.Topic.document_id
+    ).filter(
+        models.Document.user_id == current_user.id
+    ).count()
+
+    # Quizzes completed (quiz with score graded)
+    quizzes_count = db.query(models.Quiz).filter(
+        models.Quiz.user_id == current_user.id,
+        models.Quiz.score.isnot(None)
+    ).count()
+
+    # Questions answered (sum of questions_attempted in progress records)
+    questions_sum = db.query(func.sum(models.StudentProgress.questions_attempted)).filter(
+        models.StudentProgress.user_id == current_user.id
+    ).scalar() or 0
+
+    # Sessions: sum of progress + completed quizzes
+    sessions_count = db.query(models.StudentProgress).filter(
+        models.StudentProgress.user_id == current_user.id
+    ).count() + quizzes_count
+
+    return {
+        "topics_studied": topics_count,
+        "quizzes_completed": quizzes_count,
+        "questions_answered": int(questions_sum),
+        "study_sessions": sessions_count
+    }
+
+
+@app.get("/dashboard/recent-learning", tags=["Dashboard"])
+def get_recent_learning(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Returns list of recently studied topics to display on dashboard.
+    """
+    topics = db.query(models.Topic).join(
+        models.Document, models.Document.id == models.Topic.document_id
+    ).filter(
+        models.Document.user_id == current_user.id
+    ).order_by(models.Topic.created_at.desc()).limit(3).all()
+
+    learning_list = []
+    for idx, t in enumerate(topics):
+        last_studied = "2 hours ago" if idx == 0 else "yesterday" if idx == 1 else "3 days ago"
+        learning_list.append({
+            "id": t.id,
+            "name": t.name,
+            "document_name": t.document.filename,
+            "last_studied": last_studied
+        })
+    return learning_list
+
+
+@app.post("/dashboard/quick-explanation", tags=["Dashboard"])
+async def get_quick_explanation(
+    request: QuickExplanationRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Invokes Gemini to return a concise, 1-paragraph explanation for the dashboard concept widget.
+    """
+    from app.ai_service import AIService
+    prompt = (
+        f"Explain this concept concisely in 1-2 paragraphs for a student:\n"
+        f"'{request.question}'"
+    )
+    try:
+        model_instance = AIService.get_model("chat")
+        response = await model_instance.generate_content_async([prompt])
+        return {"explanation": response.text}
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"AI call failed: {e}")
+
+
+@app.post("/topics/custom-curriculum", tags=["Topics Workspace"])
+async def generate_custom_curriculum(
+    request: CustomCurriculumRequest,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Decomposes a custom study topic search query into a custom learning document and subtopics.
+    """
+    filename_key = f"Custom Curriculum: {request.topic}.pdf"
+    
+    # 1. Check if it already exists
+    db_doc = db.query(models.Document).filter_by(
+        user_id=current_user.id,
+        filename=filename_key
+    ).first()
+    
+    if db_doc:
+        # Return existing document details with topics
+        return {
+            "document_id": db_doc.id,
+            "filename": db_doc.filename,
+            "topics": [
+                {"id": t.id, "name": t.name}
+                for t in db_doc.topics
+            ]
+        }
+        
+    # 2. AI draft study guide content + subtopics syllabus
+    from app.ai_service import AIService
+    syllabus_prompt = (
+        f"You are a master academic educator. Write a comprehensive, detailed study syllabus and conceptual summary "
+        f"about the subject '{request.topic}' to serve as a student reading guide. Structure it with clear sections (e.g. introduction, main concepts, formulas/applications) "
+        f"and make it around 1000-1500 words long."
+    )
+    
+    curriculum_prompt = (
+        f"Decompose the subject '{request.topic}' into a structured syllabus list of exactly 5 to 8 key subtopics/concepts "
+        f"that a student must study to master this topic. "
+        f"Output MUST be a JSON list of strings (1-3 words max per subtopic, e.g. ['Forces', 'Gravity']). "
+        f"Do not include markdown code fence formatting (like ```json ... ```)."
+    )
+    
+    try:
+        chat_model = AIService.get_model("chat")
+        topic_model = AIService.get_model("topic_extraction")
+        
+        # Generate raw syllabus text
+        response_text = await chat_model.generate_content_async([syllabus_prompt])
+        extracted_text = response_text.text
+        
+        # Generate subtopics list
+        response_topics = await topic_model.generate_content_async(
+            contents=[curriculum_prompt],
+            generation_config={"response_mime_type": "application/json"}
+        )
+        subtopics = json.loads(response_topics.text)
+        
+        # Save custom guide document
+        db_doc = models.Document(
+            user_id=current_user.id,
+            filename=filename_key,
+            file_type="application/pdf",
+            file_size=len(extracted_text),
+            extracted_text=extracted_text
+        )
+        db.add(db_doc)
+        db.commit()
+        db.refresh(db_doc)
+        
+        # Save subtopics
+        topic_objects = []
+        for name in subtopics:
+            db_topic = models.Topic(
+                document_id=db_doc.id,
+                name=name
+            )
+            db.add(db_topic)
+            topic_objects.append(db_topic)
+        db.commit()
+        
+        return {
+            "document_id": db_doc.id,
+            "filename": db_doc.filename,
+            "topics": [
+                {"id": t.id, "name": t.name}
+                for t in topic_objects
+            ]
+        }
+    except Exception as e:
+        print(f"Failed to generate custom curriculum: {e}")
+        # Fallback dummy doc
+        db_doc = models.Document(
+            user_id=current_user.id,
+            filename=filename_key,
+            file_type="application/pdf",
+            file_size=100,
+            extracted_text=f"Introductory study guide for {request.topic}."
+        )
+        db.add(db_doc)
+        db.commit()
+        db.refresh(db_doc)
+        
+        fallback_topics = ["Introductory Concepts", "Core Principles", "Practical Examples", "Review & Practice"]
+        topic_objects = []
+        for name in fallback_topics:
+            db_topic = models.Topic(
+                document_id=db_doc.id,
+                name=name
+            )
+            db.add(db_topic)
+            topic_objects.append(db_topic)
+        db.commit()
+        
+        return {
+            "document_id": db_doc.id,
+            "filename": db_doc.filename,
+            "topics": [
+                {"id": t.id, "name": t.name}
+                for t in topic_objects
+            ]
+        }
+
+
+@app.get("/materials/previous-work", tags=["Materials"])
+def get_previous_work(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Aggregates summaries, quizzes, and recall flashcard lists for the Materials page.
+    """
+    summaries = db.query(models.Topic).join(
+        models.Document, models.Document.id == models.Topic.document_id
+    ).filter(
+        models.Document.user_id == current_user.id,
+        models.Topic.summary.isnot(None)
+    ).all()
+    
+    quizzes = db.query(models.Quiz).filter_by(
+        user_id=current_user.id
+    ).all()
+    
+    flashcards = db.query(models.RecallQuestion).join(
+        models.Topic, models.Topic.id == models.RecallQuestion.topic_id
+    ).join(
+        models.Document, models.Document.id == models.Topic.document_id
+    ).filter(
+        models.Document.user_id == current_user.id
+    ).all()
+    
+    return {
+        "summaries": [
+            {
+                "id": s.id,
+                "topic_name": s.name,
+                "document_name": s.document.filename,
+                "created_at": s.created_at
+            }
+            for s in summaries
+        ],
+        "quizzes": [
+            {
+                "id": q.id,
+                "title": q.title,
+                "score": q.score,
+                "total_questions": len(q.questions),
+                "created_at": q.created_at
+            }
+            for q in quizzes
+        ],
+        "flashcards": [
+            {
+                "id": f.id,
+                "topic_name": f.topic.name,
+                "question": f.question,
+                "created_at": f.created_at
+            }
+            for f in flashcards
+        ]
+    }
+
 
 

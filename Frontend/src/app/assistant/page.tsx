@@ -1,434 +1,873 @@
 "use client";
 
-import React, { useState, useEffect, useRef, Suspense } from "react";
+import React, { useEffect, useState, useRef, Suspense } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
-import { Message, MessageProps } from "@/components/Message";
-import { ChatInput } from "@/components/ChatInput";
-import styles from "@/components/Chat.module.css";
+import styles from "./assistant.module.css";
 
 const API_BASE = typeof window !== "undefined" ? `http://${window.location.hostname}:8000` : "http://localhost:8000";
 
-interface Conversation {
+interface Topic {
+  id: number;
+  name: string;
+}
+
+interface DocumentWorkspace {
+  id: number;
+  filename: string;
+  extracted_text?: string;
+  topics: Topic[];
+}
+
+interface Lesson {
+  concept: string;
+  example: string;
+  understanding_question: string;
+  understanding_answer: string;
+  understanding_explanation: string;
+}
+
+interface PracticeExercise {
+  id: number;
+  question: string;
+  correct_answer: string;
+  explanation: string;
+}
+
+interface QuizQuestion {
+  id: number;
+  question_text: string;
+  options: string[];
+}
+
+interface Quiz {
   id: number;
   title: string;
+  questions: QuizQuestion[];
+}
+
+interface GradedQuestion {
+  id: number;
+  question_text: string;
+  options: string[];
+  student_answer: string;
+  correct_answer: string;
+  explanation: string;
+  is_correct: boolean;
+}
+
+interface QuizResult {
+  score: number;
+  total_questions: number;
+  questions: GradedQuestion[];
+}
+
+interface RecallQuestion {
+  question: string;
+  answer: string;
+}
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
   created_at: string;
 }
 
-const INITIAL_MESSAGES: MessageProps[] = [
-  {
-    role: "assistant",
-    content: "Hi! I'm **SBud**, your AI study tutor. I'm here to help you understand complex concepts step-by-step.\n\nWhat would you like to study today? (e.g., Photosynthesis, Gravity, Mitosis, or paste a homework question!)",
-  }
-];
-
-function AssistantInner() {
-  const [messages, setMessages] = useState<MessageProps[]>(INITIAL_MESSAGES);
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [isInitializing, setIsInitializing] = useState(true);
-  const [userEmail, setUserEmail] = useState<string | null>(null);
-
-  // Conversations State
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [activeConversationId, setActiveConversationId] = useState<number | null>(null);
-  const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const router = useRouter();
+function AssistantWorkspaceContent() {
   const searchParams = useSearchParams();
-  const initialQuery = searchParams.get("q");
+  const router = useRouter();
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  };
+  // Route Deep Linking Params
+  const docIdParam = searchParams.get("docId");
+  const topicIdParam = searchParams.get("topicId");
 
+  // Query & Upload States (Topic Setup)
+  const [searchQuery, setSearchQuery] = useState<string>("");
+  const [isUploading, setIsUploading] = useState<boolean>(false);
+  const [fileError, setFileError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Core Study Data State
+  const [activeDocId, setActiveDocId] = useState<number | null>(null);
+  const [document, setDocument] = useState<DocumentWorkspace | null>(null);
+  const [extractedText, setExtractedText] = useState<string>("");
+  const [selectedTopic, setSelectedTopic] = useState<Topic | null>(null);
+  const [activeAction, setActiveAction] = useState<"learn" | "practice" | "quiz" | "summarize" | "recall" | "clarify" | null>(null);
+
+  // Status/Loading State
+  const [loadingWorkspace, setLoadingWorkspace] = useState<boolean>(false);
+  const [loadingAction, setLoadingAction] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Action Panel Contents
+  const [lesson, setLesson] = useState<Lesson | null>(null);
+  const [practice, setPractice] = useState<PracticeExercise | null>(null);
+  const [quiz, setQuiz] = useState<Quiz | null>(null);
+  const [summary, setSummary] = useState<string>("");
+  const [recall, setRecall] = useState<RecallQuestion | null>(null);
+
+  // Action inputs/progress
+  const [lessonAnswer, setLessonAnswer] = useState<string>("");
+  const [showLessonFeedback, setShowLessonFeedback] = useState<boolean>(false);
+  const [practiceAnswer, setPracticeAnswer] = useState<string>("");
+  const [showPracticeFeedback, setShowPracticeFeedback] = useState<boolean>(false);
+  const [recallAnswer, setRecallAnswer] = useState<string>("");
+  const [isRecallRevealed, setIsRecallRevealed] = useState<boolean>(false);
+
+  // Quiz progress
+  const [activeQuizQuestionIndex, setActiveQuizQuestionIndex] = useState<number>(0);
+  const [quizSelections, setQuizSelections] = useState<Record<string, string>>({});
+  const [quizResult, setQuizResult] = useState<QuizResult | null>(null);
+
+  // Clarify chat progress
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState<string>("");
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  // Parse deep-linked documents/topics on mount or params change
   useEffect(() => {
-    scrollToBottom();
-  }, [messages, isLoading]);
+    if (docIdParam) {
+      const id = parseInt(docIdParam);
+      setActiveDocId(id);
+      loadWorkspace(id);
+    } else {
+      // Clear workspace if no docIdParam
+      setActiveDocId(null);
+      setDocument(null);
+      setExtractedText("");
+      setSelectedTopic(null);
+      setActiveAction(null);
+    }
+  }, [docIdParam]);
 
-  // Load profile and conversations on mount
+  // Scroll clarify chat to bottom
   useEffect(() => {
-    const checkAuthAndLoad = async () => {
-      try {
-        // 1. Authenticate user
-        const authResp = await fetch(`${API_BASE}/users/me`, {
-          method: "GET",
-          credentials: "include",
-        });
+    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages, activeAction]);
 
-        if (!authResp.ok) {
-          throw new Error("Unauthenticated user session.");
-        }
-
-        const userData = await authResp.json();
-        setUserEmail(userData.email);
-
-        // 2. Fetch User's Conversations
-        const convResp = await fetch(`${API_BASE}/conversations`, {
-          method: "GET",
-          credentials: "include",
-        });
-
-        if (convResp.ok) {
-          const convList = await convResp.json();
-          setConversations(convList);
-          
-          // Check if there was an initial query requested from dashboard
-          if (initialQuery && initialQuery.trim()) {
-            // Start a new conversation thread for the quick ask
-            await handleNewChatWithQuery(initialQuery.trim());
-          } else if (convList.length > 0) {
-            const mostRecent = convList[0];
-            setActiveConversationId(mostRecent.id);
-            await loadConversationMessages(mostRecent.id);
-          } else {
-            await handleNewChat();
-          }
-        }
-      } catch (err) {
-        console.warn("Initialization failed, redirecting to login:", err);
-        router.push("/login");
-      } finally {
-        setIsInitializing(false);
-      }
-    };
-
-    checkAuthAndLoad();
-  }, [router]);
-
-  // Load messages of a specific conversation
-  const loadConversationMessages = async (convId: number) => {
-    setIsLoading(true);
+  const loadWorkspace = async (docIdVal: number) => {
+    setLoadingWorkspace(true);
     setError(null);
     try {
-      const resp = await fetch(`${API_BASE}/conversations/${convId}`, {
-        method: "GET",
-        credentials: "include",
-      });
-
-      if (!resp.ok) {
-        throw new Error("Could not restore conversation messages.");
-      }
-
-      const data = await resp.json();
-      
-      const mapped = data.messages.map((msg: any) => ({
-        role: msg.role,
-        content: msg.content,
-        createdAt: new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      }));
-
-      if (mapped.length === 0) {
-        setMessages(INITIAL_MESSAGES);
-      } else {
-        setMessages(mapped);
-      }
-    } catch (err: any) {
-      setError(err.message || "Failed to load conversation history.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Start new conversation thread
-  const handleNewChat = async () => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const resp = await fetch(`${API_BASE}/conversations`, {
-        method: "POST",
-        credentials: "include",
-      });
-
-      if (!resp.ok) {
-        throw new Error("Failed to start a new chat session.");
-      }
-
-      const newConv = await resp.json();
-      setConversations((prev) => [newConv, ...prev]);
-      setActiveConversationId(newConv.id);
-      setMessages(INITIAL_MESSAGES);
-    } catch (err: any) {
-      setError(err.message || "Could not initialize new conversation thread.");
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Start new conversation thread and send query immediately
-  const handleNewChatWithQuery = async (queryText: string) => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const resp = await fetch(`${API_BASE}/conversations`, {
-        method: "POST",
-        credentials: "include",
-      });
-
-      if (!resp.ok) {
-        throw new Error("Failed to start a new chat session.");
-      }
-
-      const newConv = await resp.json();
-      setConversations((prev) => [newConv, ...prev]);
-      setActiveConversationId(newConv.id);
-      
-      // Clean query params so refresh doesn't trigger duplicate chats
-      router.replace("/assistant");
-
-      // Send the query message to this conversation
-      await handleSendMessageDirectly(newConv.id, queryText);
-    } catch (err: any) {
-      setError(err.message || "Could not initialize new conversation thread.");
-      setIsLoading(false);
-    }
-  };
-
-  // Select another conversation
-  const handleSelectConversation = async (convId: number) => {
-    if (convId === activeConversationId) return;
-    setActiveConversationId(convId);
-    await loadConversationMessages(convId);
-  };
-
-  // Delete conversation thread
-  const handleDeleteConversation = async (e: React.MouseEvent, convId: number) => {
-    e.stopPropagation();
-    if (!confirm("Are you sure you want to delete this study chat thread?")) return;
-
-    try {
-      const resp = await fetch(`${API_BASE}/conversations/${convId}`, {
-        method: "DELETE",
-        credentials: "include",
-      });
-
-      if (!resp.ok) {
-        throw new Error("Could not delete conversation.");
-      }
-
-      setConversations((prev) => prev.filter((c) => c.id !== convId));
-
-      if (activeConversationId === convId) {
-        const remaining = conversations.filter((c) => c.id !== convId);
-        if (remaining.length > 0) {
-          setActiveConversationId(remaining[0].id);
-          await loadConversationMessages(remaining[0].id);
-        } else {
-          await handleNewChat();
-        }
-      }
-    } catch (err: any) {
-      alert(err.message || "Failed to delete conversation thread.");
-    }
-  };
-
-  // Send message helper
-  const handleSendMessage = async (text: string) => {
-    if (activeConversationId === null) {
-      setError("No active conversation session.");
-      return;
-    }
-    await handleSendMessageDirectly(activeConversationId, text);
-  };
-
-  const handleSendMessageDirectly = async (convId: number, text: string) => {
-    const userMessage: MessageProps = {
-      role: "user",
-      content: text,
-      createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
-    
-    setMessages((prev) => [...prev, userMessage]);
-    setIsLoading(true);
-    setError(null);
-
-    try {
-      const response = await fetch(`${API_BASE}/conversations/${convId}/messages`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        credentials: "include",
-        body: JSON.stringify({ content: text })
-      });
-
-      if (!response.ok) {
-        if (response.status === 401) {
-          router.push("/login");
-          return;
-        }
-        const errData = await response.json().catch(() => ({}));
-        throw new Error(errData.detail || "Server returned an error responding to your request.");
-      }
-
-      const aiMsg = await response.json();
-      
-      const assistantMessage: MessageProps = {
-        role: "assistant",
-        content: aiMsg.content,
-        createdAt: new Date(aiMsg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-      };
-
-      setMessages((prev) => [...prev, assistantMessage]);
-
-      // Refresh titles
-      const listResp = await fetch(`${API_BASE}/conversations`, {
+      // 1. Fetch document and topics list
+      const docResp = await fetch(`${API_BASE}/documents/${docIdVal}`, {
         method: "GET",
         credentials: "include"
       });
-      if (listResp.ok) {
-        const convList = await listResp.json();
-        setConversations(convList);
+      if (!docResp.ok) throw new Error("Failed to load study curriculum.");
+      const docData = await docResp.json();
+      setDocument(docData);
+
+      // 2. Fetch raw text source
+      const textResp = await fetch(`${API_BASE}/documents/${docIdVal}/text`, {
+        method: "GET",
+        credentials: "include"
+      });
+      if (textResp.ok) {
+        const textData = await textResp.json();
+        setExtractedText(textData.text);
       }
-    } catch (err: any) {
-      console.error("Failed to send message:", err);
-      setError(err.message || "Failed to communicate with tutor. Please check your network connection.");
+
+      // 3. Pre-select topic if topicIdParam matches one of the topics
+      if (topicIdParam && docData.topics) {
+        const topicIdVal = parseInt(topicIdParam);
+        const matched = docData.topics.find((t: Topic) => t.id === topicIdVal);
+        if (matched) {
+          setSelectedTopic(matched);
+          setActiveAction(null);
+        }
+      }
+    } catch (e: any) {
+      setError(e.message || "Failed to launch workspace.");
     } finally {
-      setIsLoading(false);
+      setLoadingWorkspace(false);
     }
   };
 
-  const handleRetry = () => {
+  const handleCustomSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+
+    setLoadingWorkspace(true);
     setError(null);
-    const lastUserMsg = [...messages].reverse().find(msg => msg.role === "user");
-    if (lastUserMsg) {
-      setMessages(prev => prev.filter((_, idx) => idx !== prev.lastIndexOf(lastUserMsg)));
-      handleSendMessage(lastUserMsg.content);
+    try {
+      const resp = await fetch(`${API_BASE}/topics/custom-curriculum`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ topic: searchQuery })
+      });
+
+      if (!resp.ok) throw new Error("Failed to formulate custom syllabus.");
+      const data = await resp.json();
+      
+      // Redirect URL with newly created document id to update history and deep-linking state
+      router.push(`/assistant?docId=${data.document_id}`);
+    } catch (err: any) {
+      setError(err.message || "Failed to generate AI custom curriculum.");
+      setLoadingWorkspace(false);
+    }
+  };
+
+  const triggerFileInput = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.type !== "application/pdf") {
+      setFileError("Only PDF documents are supported for study materials.");
+      return;
+    }
+
+    if (file.size > 10 * 1024 * 1024) {
+      setFileError("File size exceeds 10MB limit.");
+      return;
+    }
+
+    setIsUploading(true);
+    setFileError(null);
+
+    const formData = new FormData();
+    formData.append("file", file);
+
+    try {
+      const resp = await fetch(`${API_BASE}/documents`, {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
+
+      if (!resp.ok) {
+        const errData = await resp.json().catch(() => ({}));
+        throw new Error(errData.detail || "Failed to upload file.");
+      }
+
+      const data = await resp.json();
+      router.push(`/assistant?docId=${data.id}`);
+    } catch (err: any) {
+      setFileError(err.message || "Failed to upload document.");
+    } finally {
+      setIsUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
+
+  const handleSelectTopic = (topic: Topic) => {
+    setSelectedTopic(topic);
+    setActiveAction(null);
+    setLesson(null);
+    setPractice(null);
+    setQuiz(null);
+    setSummary("");
+    setRecall(null);
+    setQuizResult(null);
+    setChatMessages([]);
+  };
+
+  const handleTriggerAction = async (action: "learn" | "practice" | "quiz" | "summarize" | "recall" | "clarify") => {
+    if (!selectedTopic) return;
+    setActiveAction(action);
+    setLoadingAction(true);
+    setError(null);
+
+    setLessonAnswer("");
+    setShowLessonFeedback(false);
+    setPracticeAnswer("");
+    setShowPracticeFeedback(false);
+    setRecallAnswer("");
+    setIsRecallRevealed(false);
+
+    try {
+      if (action === "learn") {
+        const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/learn`, {
+          method: "POST",
+          credentials: "include"
+        });
+        if (!resp.ok) throw new Error("Failed to load study lesson.");
+        const data = await resp.json();
+        setLesson(data);
+      } else if (action === "practice") {
+        const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/practice`, {
+          method: "POST",
+          credentials: "include"
+        });
+        if (!resp.ok) throw new Error("Failed to load practice exercise.");
+        const data = await resp.json();
+        setPractice(data);
+      } else if (action === "quiz") {
+        const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/quiz`, {
+          method: "POST",
+          credentials: "include"
+        });
+        if (!resp.ok) throw new Error("Failed to generate topic quiz.");
+        const data = await resp.json();
+        setQuiz(data);
+        setActiveQuizQuestionIndex(0);
+        setQuizSelections({});
+        setQuizResult(null);
+      } else if (action === "summarize") {
+        const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/summarize`, {
+          method: "POST",
+          credentials: "include"
+        });
+        if (!resp.ok) throw new Error("Failed to generate topic summary.");
+        const data = await resp.json();
+        setSummary(data.summary);
+      } else if (action === "recall") {
+        const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/recall`, {
+          method: "POST",
+          credentials: "include"
+        });
+        if (!resp.ok) throw new Error("Failed to generate active recall card.");
+        const data = await resp.json();
+        setRecall(data);
+      } else if (action === "clarify") {
+        const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/clarify`, {
+          method: "GET",
+          credentials: "include"
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          setChatMessages(data.messages || []);
+        }
+      }
+    } catch (err: any) {
+      setError(err.message || "Failed to execute topic action.");
+    } finally {
+      setLoadingAction(false);
+    }
+  };
+
+  const handleSendClarifyMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim() || !selectedTopic) return;
+
+    const currentInput = chatInput;
+    setChatInput("");
+
+    const localUserMsg: ChatMessage = {
+      role: "user",
+      content: currentInput,
+      created_at: new Date().toISOString()
+    };
+    setChatMessages((prev) => [...prev, localUserMsg]);
+
+    try {
+      const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/clarify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ content: currentInput })
+      });
+
+      if (!resp.ok) throw new Error("AI tutor failed to reply.");
+      const data = await resp.json();
+      setChatMessages(data.messages || []);
+    } catch (err: any) {
+      alert(err.message || "Tutor response failed.");
+    }
+  };
+
+  const handleQuizSubmit = async () => {
+    if (!quiz) return;
+    setLoadingAction(true);
+    try {
+      const resp = await fetch(`${API_BASE}/quizzes/${quiz.id}/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ answers: quizSelections })
+      });
+      if (!resp.ok) throw new Error("Failed to submit quiz grading.");
+      const data = await resp.json();
+      setQuizResult({
+        score: data.score,
+        total_questions: data.total_questions,
+        questions: data.questions
+      });
+    } catch (err: any) {
+      alert(err.message || "Could not grade quiz.");
+    } finally {
+      setLoadingAction(false);
     }
   };
 
   return (
-    <div 
-      style={{
-        display: "flex",
-        height: "calc(100vh - 120px)",
-        width: "100%",
-        overflow: "hidden",
-        position: "relative",
-        background: "var(--glass-bg)",
-        border: "1px solid var(--glass-border)",
-        borderRadius: "20px",
-        boxShadow: "var(--shadow-xl)",
-        backdropFilter: "var(--glass-blur)"
-      }}
-    >
-      {/* Historical Chats Sidebar */}
-      <aside className={`${styles.sidebar} ${isSidebarOpen ? styles.sidebarOpen : styles.sidebarClosed}`} style={{ height: "100%", borderRight: "1px solid var(--border-light)" }}>
-        <div className={styles.sidebarHeader} style={{ borderBottom: "1px solid var(--border-light)" }}>
-          <button 
-            className={styles.newChatButton} 
-            onClick={handleNewChat}
-            disabled={isLoading || isInitializing}
-            title="Start New Chat"
-            style={{ width: "100%" }}
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className={styles.newChatIcon}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-            </svg>
-            <span>New Chat</span>
-          </button>
-        </div>
-
-        <div className={styles.conversationsScroll} style={{ padding: "1rem" }}>
-          <div className={styles.sectionHeader} style={{ fontSize: "0.75rem", color: "var(--text-muted)", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.5px", marginBottom: "0.75rem" }}>Past Discussions</div>
-          <div className={styles.convList} style={{ display: "flex", flexDirection: "column", gap: "0.35rem" }}>
-            {conversations.map((conv) => (
-              <div 
-                key={conv.id} 
-                className={`${styles.convItem} ${activeConversationId === conv.id ? styles.convItemActive : ""}`}
-                onClick={() => handleSelectConversation(conv.id)}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={styles.chatBubbleIcon}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 0 1-2.555-.337A5.972 5.972 0 0 1 5.41 20.97a5.969 5.969 0 0 1-.474-.065 4.48 4.48 0 0 0 .978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25Z" />
-                </svg>
-                <span className={styles.convTitle} style={{ fontSize: "0.9rem" }} title={conv.title}>{conv.title}</span>
-                <button 
-                  className={styles.deleteConvButton}
-                  onClick={(e) => handleDeleteConversation(e, conv.id)}
-                  title="Delete Conversation"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={styles.trashIcon}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
-                  </svg>
-                </button>
-              </div>
-            ))}
+    <div className={styles.container}>
+      {activeDocId === null ? (
+        // Experience Entry state: Search query or PDF upload
+        <div style={{ display: "flex", flexDirection: "column", gap: "2.5rem", maxWidth: "600px", margin: "4rem auto 0 auto" }}>
+          <div style={{ textAlign: "center" }}>
+            <h1 style={{ fontSize: "2.2rem", fontWeight: 800, background: "var(--accent-gradient)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: "0.5rem" }}>
+              What do you want to learn?
+            </h1>
+            <p style={{ color: "var(--text-secondary)", fontSize: "0.95rem" }}>
+              Enter any topic curriculum or upload your document to create your study workspace.
+            </p>
           </div>
-        </div>
-      </aside>
 
-      {/* Chat Workspace */}
-      <div className={styles.chatWrapper} style={{ flex: 1, display: "flex", flexDirection: "column", height: "100%", background: "transparent" }}>
-        <header className={styles.header} style={{ borderBottom: "1px solid var(--border-light)", background: "rgba(11, 15, 25, 0.2)" }}>
-          <button 
-            className={styles.sidebarToggle} 
-            onClick={() => setIsSidebarOpen(!isSidebarOpen)}
-            aria-label="Toggle sidebar"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={styles.toggleIcon}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6.75h16.5M3.75 12h16.5m-16.5 5.25H12" />
-            </svg>
-          </button>
-
-          <div className={styles.headerTitleContainer}>
-            <span className={styles.activeTitle}>
-              {conversations.find((c) => c.id === activeConversationId)?.title || "Active Discussion"}
-            </span>
-          </div>
-        </header>
-
-        <main className={styles.chatArea} style={{ flex: 1, overflowY: "auto", padding: "1.5rem" }}>
-          {isInitializing ? (
-            <div className={styles.initializingContainer}>
-              <div className={styles.spinner} />
-              <p>Initializing SBud secure tutor connection...</p>
-            </div>
-          ) : (
-            <div className={styles.messagesList} style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-              {messages.map((msg, index) => (
-                <Message key={index} role={msg.role} content={msg.content} createdAt={msg.createdAt} />
-              ))}
-              
-              {/* Typing Loader */}
-              {isLoading && (
-                <div className={styles.typingIndicatorContainer}>
-                  <div className={styles.avatarMini}>SB</div>
-                  <div className={styles.typingBubble}>
-                    <span></span>
-                    <span></span>
-                    <span></span>
-                  </div>
-                </div>
-              )}
-
-              {/* Error Alert */}
-              {error && (
-                <div className={styles.errorBanner}>
-                  <div className={styles.errorContent}>
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={styles.errorIcon}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
-                    </svg>
-                    <span>{error}</span>
-                  </div>
-                  <button className={styles.retryButton} onClick={handleRetry}>Retry</button>
-                </div>
-              )}
-
-              <div ref={messagesEndRef} />
+          {error && (
+            <div style={{ padding: "1rem", backgroundColor: "rgba(239,68,68,0.1)", border: "1px solid var(--danger)", borderRadius: "12px", color: "var(--danger)", fontSize: "0.85rem" }}>
+              {error}
             </div>
           )}
-        </main>
 
-        <footer className={styles.footer} style={{ padding: "1.5rem", borderTop: "1px solid var(--border-light)", background: "rgba(11, 15, 25, 0.2)" }}>
-          <div className={styles.inputWrapper}>
-            <ChatInput onSendMessage={handleSendMessage} disabled={isLoading || isInitializing} />
+          {/* Search form query */}
+          <form onSubmit={handleCustomSearch} className={styles.panelCard} style={{ background: "var(--glass-bg)", border: "1px solid var(--glass-border)", padding: "1.5rem" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+              <label style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--text-primary)" }}>AI Curriculum Search</label>
+              <div style={{ display: "flex", background: "rgba(11, 15, 25, 0.5)", border: "1px solid var(--border-light)", borderRadius: "12px", padding: "0.25rem" }}>
+                <input
+                  type="text"
+                  placeholder="Syllabus topic e.g. Newtonian Mechanics, Organic Chemistry..."
+                  className={styles.inputField}
+                  style={{ border: "none", margin: 0, background: "transparent" }}
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                />
+                <button type="submit" className={styles.submitBtn} style={{ borderRadius: "10px" }}>
+                  Generate
+                </button>
+              </div>
+            </div>
+          </form>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "1rem", color: "var(--text-muted)", fontSize: "0.85rem" }}>
+            <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
+            <span>OR</span>
+            <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
           </div>
-          <p className={styles.footerNote} style={{ fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "0.5rem", textAlign: "center" }}>
-            SBud is designed to guide your study. Tip: Ask it to break things down!
-          </p>
-        </footer>
-      </div>
+
+          {/* Material Uploader */}
+          <div className={styles.panelCard} style={{ background: "var(--glass-bg)", border: "1px solid var(--glass-border)", padding: "1.5rem" }}>
+            <h3 style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--text-primary)", marginBottom: "0.75rem" }}>Upload Study Guide</h3>
+            <div
+              onClick={triggerFileInput}
+              style={{
+                border: "2px dashed var(--border-light)",
+                borderRadius: "12px",
+                padding: "2rem 1.5rem",
+                textAlign: "center",
+                cursor: "pointer",
+                transition: "all 0.2s",
+                background: "rgba(255,255,255,0.01)"
+              }}
+              onMouseOver={(e) => e.currentTarget.style.borderColor = "var(--border-active)"}
+              onMouseOut={(e) => e.currentTarget.style.borderColor = "var(--border-light)"}
+            >
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileUpload}
+                accept="application/pdf"
+                style={{ display: "none" }}
+              />
+              {isUploading ? (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.5rem" }}>
+                  <div className={styles.spinner} />
+                  <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>Uploading material PDF...</span>
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.5rem" }}>
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" style={{ width: "32px", height: "32px", color: "var(--text-muted)" }}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z" />
+                  </svg>
+                  <span style={{ fontSize: "0.85rem", fontWeight: 600 }}>Select PDF Document</span>
+                </div>
+              )}
+            </div>
+            {fileError && (
+              <p style={{ color: "var(--danger)", fontSize: "0.75rem", marginTop: "0.5rem", textAlign: "center" }}>{fileError}</p>
+            )}
+          </div>
+        </div>
+      ) : (
+        // Workspace Mode: Split pane study guide reading & topic action execution
+        <>
+          <div className={styles.header}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+              <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>Learning Workspace</span>
+              <h1 className={styles.docTitle}>
+                {document?.filename.startsWith("Custom Curriculum: ") 
+                  ? document.filename.replace("Custom Curriculum: ", "").replace(".pdf", "")
+                  : document?.filename || "Loading Curriculum Workspace..."
+                }
+              </h1>
+            </div>
+            <button className={styles.backBtn} onClick={() => router.push("/assistant")}>
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" style={{ width: "16px", height: "16px" }}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" />
+              </svg>
+              Search New Topic
+            </button>
+          </div>
+
+          {error && (
+            <div style={{ padding: "1rem", backgroundColor: "rgba(239,68,68,0.1)", border: "1px solid var(--danger)", borderRadius: "12px", color: "var(--danger)", fontSize: "0.85rem", marginBottom: "1rem" }}>
+              {error}
+            </div>
+          )}
+
+          {loadingWorkspace ? (
+            <div className={styles.loader}>
+              <div className={styles.spinner} />
+              <p>Constructing study guide context...</p>
+            </div>
+          ) : (
+            <div className={styles.workspace}>
+              {/* Left Column: Source reading context */}
+              <div className={styles.viewerCard}>
+                <div className={styles.viewerHeader}>
+                  <h2 className={styles.viewerTitle}>
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" style={{ width: "20px", height: "20px", color: "var(--accent-indigo)" }}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
+                    </svg>
+                    Guide Reference Text
+                  </h2>
+                </div>
+                <div className={styles.textContent}>
+                  {extractedText}
+                </div>
+              </div>
+
+              {/* Right Column: Interactive actions */}
+              <div className={styles.studyCard}>
+                {!selectedTopic ? (
+                  // Topics selection sidebar inside workspace
+                  <>
+                    <div className={styles.studyHeader}>
+                      <h2 className={styles.studyTitle}>Study Topics</h2>
+                    </div>
+                    <div className={styles.topicsList}>
+                      {document?.topics && document.topics.length > 0 ? (
+                        document.topics.map((t) => (
+                          <div key={t.id} className={styles.topicItem} onClick={() => handleSelectTopic(t)}>
+                            <span className={styles.topicName}>{t.name}</span>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" style={{ width: "16px", height: "16px", color: "var(--accent-indigo)" }}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                            </svg>
+                          </div>
+                        ))
+                      ) : (
+                        <div className={styles.loader}>
+                          <div className={styles.spinner} />
+                          <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", textAlign: "center" }}>Analyzing material syllabus topics...</p>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  // Active subtopic actions execution
+                  <>
+                    <div className={styles.studyHeader}>
+                      <div className={styles.actionsHeader}>
+                        <span className={styles.actionsSub}>Subtopic selected</span>
+                        <h2 className={styles.studyTitle} style={{ background: "var(--accent-gradient)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                          {selectedTopic.name}
+                        </h2>
+                      </div>
+                      <button className={styles.backBtn} onClick={() => setSelectedTopic(null)} style={{ padding: "0.4rem 0.75rem", fontSize: "0.75rem" }}>
+                        View Topics
+                      </button>
+                    </div>
+
+                    {/* Actions Navigation Menu */}
+                    <div className={styles.actionsGrid}>
+                      {(["learn", "practice", "quiz", "summarize", "recall", "clarify"] as const).map((act) => {
+                        const isActive = activeAction === act;
+                        const emojis: Record<string, string> = {
+                          learn: "📖",
+                          practice: "🧩",
+                          quiz: "📝",
+                          summarize: "📄",
+                          recall: "🧠",
+                          clarify: "❓"
+                        };
+                        return (
+                          <button
+                            key={act}
+                            className={`${styles.actionBtn} ${isActive ? styles.actionBtnActive : ""}`}
+                            onClick={() => handleTriggerAction(act)}
+                          >
+                            <span style={{ fontSize: "1.25rem" }}>{emojis[act]}</span>
+                            <span style={{ textTransform: "capitalize" }}>{act}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Active Action Panel Content */}
+                    <div className={styles.actionPanel}>
+                      {loadingAction ? (
+                        <div className={styles.loader}>
+                          <div className={styles.spinner} />
+                          <p style={{ textTransform: "capitalize" }}>Preparing {activeAction} action...</p>
+                        </div>
+                      ) : activeAction === "learn" && lesson ? (
+                        // Learn Progress View
+                        <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+                          <div className={styles.panelCard}>
+                            <div className={styles.learnStep}>
+                              <span className={styles.stepTitle}>Concept Explanation</span>
+                              <p className={styles.stepBody}>{lesson.concept}</p>
+                            </div>
+                          </div>
+                          <div className={styles.panelCard}>
+                            <div className={styles.learnStep}>
+                              <span className={styles.stepTitle}>Practical Example</span>
+                              <p className={`${styles.stepBody} ${styles.stepExample}`}>{lesson.example}</p>
+                            </div>
+                          </div>
+                          <div className={styles.panelCard}>
+                            <div className={styles.learnStep}>
+                              <span className={styles.stepTitle}>Check Understanding</span>
+                              <p className={styles.stepBody} style={{ fontWeight: 600 }}>{lesson.understanding_question}</p>
+                              
+                              <div className={styles.checkContainer}>
+                                <textarea
+                                  className={styles.inputField}
+                                  placeholder="Formulate your response to self-check..."
+                                  rows={2}
+                                  value={lessonAnswer}
+                                  onChange={(e) => setLessonAnswer(e.target.value)}
+                                  disabled={showLessonFeedback}
+                                />
+                                {!showLessonFeedback ? (
+                                  <button className={styles.submitBtn} onClick={() => setShowLessonFeedback(true)}>
+                                    Verify Answer
+                                  </button>
+                                ) : (
+                                  <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.5rem" }}>
+                                    <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--success)" }}>Answer Key:</span>
+                                    <p style={{ fontSize: "0.85rem", color: "var(--text-primary)" }}>{lesson.understanding_answer}</p>
+                                    <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--accent-indigo)", marginTop: "0.25rem" }}>Reasoning:</span>
+                                    <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>{lesson.understanding_explanation}</p>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ) : activeAction === "practice" && practice ? (
+                        // Practice Problem View
+                        <div className={styles.panelCard}>
+                          <div className={styles.learnStep}>
+                            <span className={styles.stepTitle}>Application Problem</span>
+                            <p className={styles.stepBody} style={{ fontWeight: 600, fontSize: "0.95rem" }}>{practice.question}</p>
+                            
+                            <div className={styles.checkContainer}>
+                              <input
+                                type="text"
+                                className={styles.inputField}
+                                placeholder="Your answer..."
+                                value={practiceAnswer}
+                                onChange={(e) => setPracticeAnswer(e.target.value)}
+                                disabled={showPracticeFeedback}
+                              />
+                              {!showPracticeFeedback ? (
+                                <button className={styles.submitBtn} onClick={() => setShowPracticeFeedback(true)}>
+                                  Submit Answer
+                                </button>
+                              ) : (
+                                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.5rem" }}>
+                                  <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--success)" }}>Correct Answer:</span>
+                                  <p style={{ fontSize: "0.85rem", color: "var(--text-primary)" }}>{practice.correct_answer}</p>
+                                  <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--accent-indigo)", marginTop: "0.25rem" }}>Explanation:</span>
+                                  <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>{practice.explanation}</p>
+                                  <button className={styles.submitBtn} style={{ background: "rgba(255,255,255,0.05)", border: "1px solid var(--border-light)", alignSelf: "flex-start", marginTop: "0.5rem" }} onClick={() => handleTriggerAction("practice")}>
+                                    Next Exercise
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ) : activeAction === "quiz" && quiz ? (
+                        // Structured Topic Quiz
+                        <div className={styles.panelCard}>
+                          {!quizResult ? (
+                            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                              <div className={styles.quizProgress}>
+                                Question {activeQuizQuestionIndex + 1} of {quiz.questions.length}
+                              </div>
+                              
+                              <div className={styles.quizQuestion}>
+                                {quiz.questions[activeQuizQuestionIndex].question_text}
+                              </div>
+
+                              <div className={styles.quizOptions}>
+                                {quiz.questions[activeQuizQuestionIndex].options.map((opt) => {
+                                  const qIdStr = quiz.questions[activeQuizQuestionIndex].id.toString();
+                                  const isSelected = quizSelections[qIdStr] === opt.charAt(0);
+                                  return (
+                                    <button
+                                      key={opt}
+                                      className={`${styles.quizOption} ${isSelected ? styles.quizOptionSelected : ""}`}
+                                      onClick={() => setQuizSelections((prev) => ({ ...prev, [qIdStr]: opt.charAt(0) }))}
+                                    >
+                                      {opt}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+
+                              <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem" }}>
+                                <button
+                                  className={styles.backBtn}
+                                  style={{ padding: "0.5rem 1rem", fontSize: "0.85rem" }}
+                                  disabled={activeQuizQuestionIndex === 0}
+                                  onClick={() => setActiveQuizQuestionIndex((p) => p - 1)}
+                                >
+                                  Previous
+                                </button>
+                                
+                                {activeQuizQuestionIndex < quiz.questions.length - 1 ? (
+                                  <button
+                                    className={styles.submitBtn}
+                                    style={{ padding: "0.5rem 1.25rem", fontSize: "0.85rem" }}
+                                    onClick={() => setActiveQuizQuestionIndex((p) => p + 1)}
+                                  >
+                                    Next
+                                  </button>
+                                ) : (
+                                  <button
+                                    className={styles.submitBtn}
+                                    style={{ padding: "0.5rem 1.25rem", fontSize: "0.85rem", backgroundColor: "var(--success)" }}
+                                    onClick={handleQuizSubmit}
+                                  >
+                                    Submit Quiz
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                              <div className={styles.quizResultTitle}>Quiz Completed!</div>
+                              <div className={styles.quizScore}>{quizResult.score} / {quizResult.total_questions}</div>
+                              
+                              <div className={styles.quizAnswerReview}>
+                                {quizResult.questions.map((q, idx) => (
+                                  <div key={q.id} className={styles.reviewItem}>
+                                    <div className={styles.reviewText}>
+                                      {idx + 1}. {q.question_text}
+                                    </div>
+                                    <div className={styles.reviewAns}>
+                                      <span className={q.is_correct ? styles.reviewCorrect : styles.reviewIncorrect}>
+                                        Your Answer: {q.student_answer || "None"} {q.is_correct ? "✓" : "✗"}
+                                      </span>
+                                      {!q.is_correct && (
+                                        <span className={styles.reviewCorrect}>
+                                          Correct: {q.correct_answer}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className={styles.reviewExp}>
+                                      {q.explanation}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                              <button className={styles.submitBtn} style={{ marginTop: "1rem", alignSelf: "center" }} onClick={() => handleTriggerAction("quiz")}>
+                                Retake Quiz
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ) : activeAction === "summarize" && summary ? (
+                        // Topic Summary View
+                        <div className={styles.panelCard}>
+                          <span className={styles.stepTitle}>Concise Summary</span>
+                          <div className={styles.stepBody} style={{ whiteSpace: "pre-wrap" }}>{summary}</div>
+                        </div>
+                      ) : activeAction === "recall" && recall ? (
+                        // Recall flashcards view
+                        <div className={styles.panelCard}>
+                          <div className={styles.learnStep}>
+                            <span className={styles.stepTitle}>Active Recall Question</span>
+                            <p className={styles.stepBody} style={{ fontWeight: 600, fontSize: "1.05rem", textAlign: "center", padding: "1.5rem 0" }}>
+                              "{recall.question}"
+                            </p>
+                            
+                            <div className={styles.checkContainer} style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                              <textarea
+                                className={styles.inputField}
+                                placeholder="Answer mentally or write it here to self-check..."
+                                rows={3}
+                                value={recallAnswer}
+                                onChange={(e) => setRecallAnswer(e.target.value)}
+                                disabled={isRecallRevealed}
+                              />
+                              
+                              {!isRecallRevealed ? (
+                                <button className={styles.submitBtn} style={{ width: "100%" }} onClick={() => setIsRecallRevealed(true)}>
+                                  Reveal Answer
+                                </button>
+                              ) : (
+                                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", width: "100%", borderTop: "1px solid var(--border-light)", paddingTop: "1rem", marginTop: "0.5rem" }}>
+                                  <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--success)" }}>Correct Answer:</span>
+                                  <p style={{ fontSize: "0.9rem", color: "var(--text-primary)", lineHeight: 1.5 }}>{recall.answer}</p>
+                                  <button className={styles.submitBtn} style={{ background: "rgba(255,255,255,0.05)", border: "1px solid var(--border-light)", marginTop: "1rem", width: "100%" }} onClick={() => handleTriggerAction("recall")}>
+                                    Next Flashcard
+                                  </button>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      ) : activeAction === "clarify" ? (
+                        // Clarify tutor chat view
+                        <div className={styles.chatContainer}>
+                          <div className={styles.chatHistory}>
+                            {chatMessages.length === 0 ? (
+                              <div className={styles.emptyState} style={{ margin: "auto" }}>
+                                Ask any specific question about {selectedTopic.name} to start.
+                              </div>
+                            ) : (
+                              chatMessages.map((msg, idx) => (
+                                <div
+                                  key={idx}
+                                  className={`${styles.chatMessage} ${
+                                    msg.role === "user" ? styles.chatMessageUser : styles.chatMessageAssistant
+                                  }`}
+                                >
+                                  {msg.content}
+                                </div>
+                              ))
+                            )}
+                            <div ref={chatBottomRef} />
+                          </div>
+
+                          <form onSubmit={handleSendClarifyMessage} className={styles.chatInputGroup}>
+                            <input
+                              type="text"
+                              placeholder="I don't understand why..."
+                              className={styles.chatInput}
+                              value={chatInput}
+                              onChange={(e) => setChatInput(e.target.value)}
+                            />
+                            <button type="submit" className={styles.chatSendBtn}>
+                              Ask Tutor
+                            </button>
+                          </form>
+                        </div>
+                      ) : (
+                        <div className={styles.emptyState}>
+                          Select one of the actions above to start learning this topic.
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -437,11 +876,12 @@ export default function AssistantPage() {
   return (
     <AppShell>
       <Suspense fallback={
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: "200px" }}>
+        <div className={styles.loader}>
           <div className={styles.spinner} />
+          <p>Loading learning workspace...</p>
         </div>
       }>
-        <AssistantInner />
+        <AssistantWorkspaceContent />
       </Suspense>
     </AppShell>
   );

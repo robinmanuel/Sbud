@@ -1,0 +1,695 @@
+"use client";
+
+import React, { useEffect, useState, use, useRef } from "react";
+import { useRouter } from "next/navigation";
+import AppShell from "@/components/AppShell";
+import styles from "./document.module.css";
+
+const API_BASE = typeof window !== "undefined" ? `http://${window.location.hostname}:8000` : "http://localhost:8000";
+
+interface Topic {
+  id: number;
+  document_id: number;
+  name: string;
+  created_at: string;
+}
+
+interface DocumentData {
+  id: number;
+  filename: string;
+  file_type: string;
+  file_size: number;
+  created_at: string;
+  topics: Topic[];
+}
+
+interface Lesson {
+  concept: string;
+  example: string;
+  understanding_question: string;
+  understanding_answer: string;
+  understanding_explanation: string;
+}
+
+interface PracticeExercise {
+  id: number;
+  question: string;
+  correct_answer: string;
+  explanation: string;
+}
+
+interface QuizQuestion {
+  id: number;
+  question_text: string;
+  options: string[];
+}
+
+interface Quiz {
+  id: number;
+  title: string;
+  questions: QuizQuestion[];
+}
+
+interface GradedQuestion {
+  id: number;
+  question_text: string;
+  options: string[];
+  student_answer: string;
+  correct_answer: string;
+  explanation: string;
+  is_correct: boolean;
+}
+
+interface QuizResult {
+  score: number;
+  total_questions: number;
+  questions: GradedQuestion[];
+}
+
+interface RecallQuestion {
+  question: string;
+  answer: string;
+}
+
+interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+interface PageProps {
+  params: Promise<{ id: string }>;
+}
+
+export default function DocumentWorkspacePage({ params }: PageProps) {
+  const unwrappedParams = use(params);
+  const docId = unwrappedParams.id;
+  const router = useRouter();
+
+  // Core Data State
+  const [document, setDocument] = useState<DocumentData | null>(null);
+  const [extractedText, setExtractedText] = useState<string>("");
+  const [selectedTopic, setSelectedTopic] = useState<Topic | null>(null);
+  const [activeAction, setActiveAction] = useState<"learn" | "practice" | "quiz" | "summarize" | "recall" | "clarify" | null>(null);
+
+  // Status/Loading State
+  const [loadingDoc, setLoadingDoc] = useState<boolean>(true);
+  const [loadingAction, setLoadingAction] = useState<boolean>(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Feature Action States
+  const [lesson, setLesson] = useState<Lesson | null>(null);
+  const [practice, setPractice] = useState<PracticeExercise | null>(null);
+  const [quiz, setQuiz] = useState<Quiz | null>(null);
+  const [summary, setSummary] = useState<string>("");
+  const [recall, setRecall] = useState<RecallQuestion | null>(null);
+  
+  // Quiz progress
+  const [activeQuizQuestionIndex, setActiveQuizQuestionIndex] = useState<number>(0);
+  const [quizSelections, setQuizSelections] = useState<Record<string, string>>({});
+  const [quizResult, setQuizResult] = useState<QuizResult | null>(null);
+
+  // Lesson & Practice User Input
+  const [lessonAnswer, setLessonAnswer] = useState<string>("");
+  const [showLessonFeedback, setShowLessonFeedback] = useState<boolean>(false);
+  const [practiceAnswer, setPracticeAnswer] = useState<string>("");
+  const [showPracticeFeedback, setShowPracticeFeedback] = useState<boolean>(false);
+
+  // Recall Progress
+  const [recallAnswer, setRecallAnswer] = useState<string>("");
+  const [isRecallRevealed, setIsRecallRevealed] = useState<boolean>(false);
+
+  // Clarify chat progress
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState<string>("");
+  const chatBottomRef = useRef<HTMLDivElement>(null);
+
+  // Load parent document and text workspace
+  useEffect(() => {
+    const loadWorkspace = async () => {
+      try {
+        // Fetch metadata & topics
+        const metadataResp = await fetch(`${API_BASE}/documents/${docId}`, {
+          method: "GET",
+          credentials: "include",
+        });
+        if (!metadataResp.ok) throw new Error("Document metadata could not be fetched.");
+        const docData = await metadataResp.json();
+        setDocument(docData);
+
+        // Fetch raw text
+        const textResp = await fetch(`${API_BASE}/documents/${docId}/text`, {
+          method: "GET",
+          credentials: "include",
+        });
+        if (textResp.ok) {
+          const textData = await textResp.json();
+          setExtractedText(textData.text);
+        }
+      } catch (err: any) {
+        setError(err.message || "Failed to load workspace data.");
+      } finally {
+        setLoadingDoc(false);
+      }
+    };
+
+    loadWorkspace();
+  }, [docId]);
+
+  // Scroll clarify chat to bottom on new message
+  useEffect(() => {
+    chatBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMessages, activeAction]);
+
+  const handleSelectTopic = (topic: Topic) => {
+    setSelectedTopic(topic);
+    setActiveAction(null); // Reset action panel
+    setLesson(null);
+    setPractice(null);
+    setQuiz(null);
+    setSummary("");
+    setRecall(null);
+    setQuizResult(null);
+    setChatMessages([]);
+  };
+
+  const handleTriggerAction = async (action: "learn" | "practice" | "quiz" | "summarize" | "recall" | "clarify") => {
+    if (!selectedTopic) return;
+    setActiveAction(action);
+    setLoadingAction(true);
+    setError(null);
+
+    // Reset inputs/toggles
+    setLessonAnswer("");
+    setShowLessonFeedback(false);
+    setPracticeAnswer("");
+    setShowPracticeFeedback(false);
+    setRecallAnswer("");
+    setIsRecallRevealed(false);
+
+    try {
+      if (action === "learn") {
+        const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/learn`, {
+          method: "POST",
+          credentials: "include"
+        });
+        if (!resp.ok) throw new Error("Failed to load study lesson.");
+        const data = await resp.json();
+        setLesson(data);
+      } else if (action === "practice") {
+        const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/practice`, {
+          method: "POST",
+          credentials: "include"
+        });
+        if (!resp.ok) throw new Error("Failed to load practice exercise.");
+        const data = await resp.json();
+        setPractice(data);
+      } else if (action === "quiz") {
+        const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/quiz`, {
+          method: "POST",
+          credentials: "include"
+        });
+        if (!resp.ok) throw new Error("Failed to generate topic quiz.");
+        const data = await resp.json();
+        setQuiz(data);
+        setActiveQuizQuestionIndex(0);
+        setQuizSelections({});
+        setQuizResult(null);
+      } else if (action === "summarize") {
+        const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/summarize`, {
+          method: "POST",
+          credentials: "include"
+        });
+        if (!resp.ok) throw new Error("Failed to generate topic summary.");
+        const data = await resp.json();
+        setSummary(data.summary);
+      } else if (action === "recall") {
+        const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/recall`, {
+          method: "POST",
+          credentials: "include"
+        });
+        if (!resp.ok) throw new Error("Failed to generate active recall card.");
+        const data = await resp.json();
+        setRecall(data);
+      } else if (action === "clarify") {
+        const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/clarify`, {
+          method: "GET",
+          credentials: "include"
+        });
+        if (resp.ok) {
+          const data = await resp.json();
+          setChatMessages(data.messages || []);
+        }
+      }
+    } catch (err: any) {
+      setError(err.message || "Failed to execute topic action.");
+    } finally {
+      setLoadingAction(false);
+    }
+  };
+
+  const handleSendClarifyMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim() || !selectedTopic) return;
+
+    const currentInput = chatInput;
+    setChatInput("");
+    
+    // Add user message locally
+    const localUserMsg: ChatMessage = {
+      role: "user",
+      content: currentInput,
+      created_at: new Date().toISOString()
+    };
+    setChatMessages((prev) => [...prev, localUserMsg]);
+
+    try {
+      const resp = await fetch(`${API_BASE}/topics/${selectedTopic.id}/clarify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ content: currentInput })
+      });
+
+      if (!resp.ok) throw new Error("AI tutor failed to reply.");
+      const data = await resp.json();
+      setChatMessages(data.messages || []);
+    } catch (err: any) {
+      alert(err.message || "Tutor response failed.");
+    }
+  };
+
+  const handleQuizSubmit = async () => {
+    if (!quiz) return;
+    setLoadingAction(true);
+    try {
+      const resp = await fetch(`${API_BASE}/quizzes/${quiz.id}/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ answers: quizSelections })
+      });
+      if (!resp.ok) throw new Error("Failed to submit quiz grading.");
+      const data = await resp.json();
+      setQuizResult({
+        score: data.score,
+        total_questions: data.total_questions,
+        questions: data.questions
+      });
+    } catch (err: any) {
+      alert(err.message || "Could not grade quiz.");
+    } finally {
+      setLoadingAction(false);
+    }
+  };
+
+  return (
+    <AppShell>
+      <div className={styles.container}>
+        <div className={styles.header}>
+          <h1 className={styles.docTitle}>
+            {document?.filename || "Loading Study Workspace..."}
+          </h1>
+          <button className={styles.backBtn} onClick={() => router.push("/")}>
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" style={{ width: "16px", height: "16px" }}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" />
+            </svg>
+            Back to Home
+          </button>
+        </div>
+
+        {error && (
+          <div style={{ padding: "1rem", backgroundColor: "rgba(239,68,68,0.1)", border: "1px solid var(--danger)", borderRadius: "12px", color: "var(--danger)", fontSize: "0.9rem" }}>
+            {error}
+          </div>
+        )}
+
+        {loadingDoc ? (
+          <div className={styles.loader}>
+            <div className={styles.spinner} />
+            <p>Initializing document workspace...</p>
+          </div>
+        ) : (
+          <div className={styles.workspace}>
+            {/* Left Column: PDF Text Viewer */}
+            <div className={styles.viewerCard}>
+              <div className={styles.viewerHeader}>
+                <h2 className={styles.viewerTitle}>
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" style={{ width: "20px", height: "20px", color: "var(--accent-indigo)" }}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
+                  </svg>
+                  Document Source
+                </h2>
+              </div>
+              <div className={styles.textContent}>
+                {extractedText}
+              </div>
+            </div>
+
+            {/* Right Column: Selected Topic Details & Actions */}
+            <div className={styles.studyCard}>
+              {!selectedTopic ? (
+                // Topic Selection Screen
+                <>
+                  <div className={styles.studyHeader}>
+                    <h2 className={styles.studyTitle}>Study Topics</h2>
+                  </div>
+                  <div className={styles.topicsList}>
+                    {document?.topics && document.topics.length > 0 ? (
+                      document.topics.map((t) => (
+                        <div key={t.id} className={styles.topicItem} onClick={() => handleSelectTopic(t)}>
+                          <span className={styles.topicName}>{t.name}</span>
+                          <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" style={{ width: "16px", height: "16px", color: "var(--accent-indigo)" }}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" />
+                          </svg>
+                        </div>
+                      ))
+                    ) : (
+                      <div className={styles.loader}>
+                        <div className={styles.spinner} />
+                        <p style={{ fontSize: "0.85rem", color: "var(--text-muted)", textAlign: "center" }}>Extracting document topics... This might take a few seconds.</p>
+                      </div>
+                    )}
+                  </div>
+                </>
+              ) : (
+                // Topic Study Screen
+                <>
+                  <div className={styles.studyHeader}>
+                    <div className={styles.actionsHeader}>
+                      <span className={styles.actionsSub}>Topic selected</span>
+                      <h2 className={styles.studyTitle} style={{ background: "var(--accent-gradient)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                        {selectedTopic.name}
+                      </h2>
+                    </div>
+                    <button className={styles.backBtn} onClick={() => setSelectedTopic(null)} style={{ padding: "0.4rem 0.75rem", fontSize: "0.75rem" }}>
+                      Change Topic
+                    </button>
+                  </div>
+
+                  {/* Actions Navigation Menu */}
+                  <div className={styles.actionsGrid}>
+                    {(["learn", "practice", "quiz", "summarize", "recall", "clarify"] as const).map((act) => {
+                      const isActive = activeAction === act;
+                      const emojis: Record<string, string> = {
+                        learn: "📖",
+                        practice: "🧩",
+                        quiz: "📝",
+                        summarize: "📄",
+                        recall: "🧠",
+                        clarify: "❓"
+                      };
+                      return (
+                        <button
+                          key={act}
+                          className={`${styles.actionBtn} ${isActive ? styles.actionBtnActive : ""}`}
+                          onClick={() => handleTriggerAction(act)}
+                        >
+                          <span style={{ fontSize: "1.25rem" }}>{emojis[act]}</span>
+                          <span style={{ textTransform: "capitalize" }}>{act}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Active Panel Content */}
+                  <div className={styles.actionPanel}>
+                    {loadingAction ? (
+                      <div className={styles.loader}>
+                        <div className={styles.spinner} />
+                        <p style={{ textTransform: "capitalize" }}>Preparing {activeAction} action...</p>
+                      </div>
+                    ) : activeAction === "learn" && lesson ? (
+                      // 1. Progressive Learn View
+                      <div style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+                        <div className={styles.panelCard}>
+                          <div className={styles.learnStep}>
+                            <span className={styles.stepTitle}>Concept Explanation</span>
+                            <p className={styles.stepBody}>{lesson.concept}</p>
+                          </div>
+                        </div>
+                        
+                        <div className={styles.panelCard}>
+                          <div className={styles.learnStep}>
+                            <span className={styles.stepTitle}>Practical Example</span>
+                            <p className={`${styles.stepBody} ${styles.stepExample}`}>{lesson.example}</p>
+                          </div>
+                        </div>
+
+                        <div className={styles.panelCard}>
+                          <div className={styles.learnStep}>
+                            <span className={styles.stepTitle}>Check Understanding</span>
+                            <p className={styles.stepBody} style={{ fontWeight: 600 }}>{lesson.understanding_question}</p>
+                            
+                            <div className={styles.checkContainer}>
+                              <textarea
+                                className={styles.inputField}
+                                placeholder="Write down your answer to check comprehension..."
+                                rows={2}
+                                value={lessonAnswer}
+                                onChange={(e) => setLessonAnswer(e.target.value)}
+                                disabled={showLessonFeedback}
+                              />
+                              {!showLessonFeedback ? (
+                                <button className={styles.submitBtn} onClick={() => setShowLessonFeedback(true)}>
+                                  Verify Answer
+                                </button>
+                              ) : (
+                                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.5rem" }}>
+                                  <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--success)" }}>Answer Key:</span>
+                                  <p style={{ fontSize: "0.85rem", color: "var(--text-primary)" }}>{lesson.understanding_answer}</p>
+                                  <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--accent-indigo)", marginTop: "0.25rem" }}>Reasoning:</span>
+                                  <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>{lesson.understanding_explanation}</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ) : activeAction === "practice" && practice ? (
+                      // 2. Practice Problem View
+                      <div className={styles.panelCard}>
+                        <div className={styles.learnStep}>
+                          <span className={styles.stepTitle}>Application Problem</span>
+                          <p className={styles.stepBody} style={{ fontWeight: 600, fontSize: "0.95rem" }}>{practice.question}</p>
+                          
+                          <div className={styles.checkContainer}>
+                            <input
+                              type="text"
+                              className={styles.inputField}
+                              placeholder="Your answer..."
+                              value={practiceAnswer}
+                              onChange={(e) => setPracticeAnswer(e.target.value)}
+                              disabled={showPracticeFeedback}
+                            />
+                            {!showPracticeFeedback ? (
+                              <button className={styles.submitBtn} onClick={() => setShowPracticeFeedback(true)}>
+                                Submit Answer
+                              </button>
+                            ) : (
+                              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.5rem" }}>
+                                <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--success)" }}>Correct Answer:</span>
+                                <p style={{ fontSize: "0.85rem", color: "var(--text-primary)" }}>{practice.correct_answer}</p>
+                                <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--accent-indigo)", marginTop: "0.25rem" }}>Explanation:</span>
+                                <p style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>{practice.explanation}</p>
+                                <button className={styles.submitBtn} style={{ background: "rgba(255,255,255,0.05)", border: "1px solid var(--border-light)", alignSelf: "flex-start", marginTop: "0.5rem" }} onClick={() => handleTriggerAction("practice")}>
+                                  Try Another Problem
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : activeAction === "quiz" && quiz ? (
+                      // 3. Structured Topic Quiz
+                      <div className={styles.panelCard}>
+                        {!quizResult ? (
+                          // Question view
+                          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                            <div className={styles.quizProgress}>
+                              Question {activeQuizQuestionIndex + 1} of {quiz.questions.length}
+                            </div>
+                            
+                            <div className={styles.quizQuestion}>
+                              {quiz.questions[activeQuizQuestionIndex].question_text}
+                            </div>
+
+                            <div className={styles.quizOptions}>
+                              {quiz.questions[activeQuizQuestionIndex].options.map((opt) => {
+                                const qIdStr = quiz.questions[activeQuizQuestionIndex].id.toString();
+                                const isSelected = quizSelections[qIdStr] === opt.charAt(0);
+                                return (
+                                  <button
+                                    key={opt}
+                                    className={`${styles.quizOption} ${isSelected ? styles.quizOptionSelected : ""}`}
+                                    onClick={() => setQuizSelections((prev) => ({ ...prev, [qIdStr]: opt.charAt(0) }))}
+                                  >
+                                    {opt}
+                                  </button>
+                                );
+                              })}
+                            </div>
+
+                            <div style={{ display: "flex", justifyContent: "space-between", marginTop: "1rem" }}>
+                              <button
+                                className={styles.backBtn}
+                                style={{ padding: "0.5rem 1rem", fontSize: "0.85rem" }}
+                                disabled={activeQuizQuestionIndex === 0}
+                                onClick={() => setActiveQuizQuestionIndex((p) => p - 1)}
+                              >
+                                Previous
+                              </button>
+                              
+                              {activeQuizQuestionIndex < quiz.questions.length - 1 ? (
+                                <button
+                                  className={styles.submitBtn}
+                                  style={{ padding: "0.5rem 1.25rem", fontSize: "0.85rem" }}
+                                  onClick={() => setActiveQuizQuestionIndex((p) => p + 1)}
+                                >
+                                  Next
+                                </button>
+                              ) : (
+                                <button
+                                  className={styles.submitBtn}
+                                  style={{ padding: "0.5rem 1.25rem", fontSize: "0.85rem", backgroundColor: "var(--success)" }}
+                                  onClick={handleQuizSubmit}
+                                >
+                                  Submit Quiz
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          // Score / review view
+                          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+                            <div className={styles.quizResultTitle}>Quiz Completed!</div>
+                            <div className={styles.quizScore}>{quizResult.score} / {quizResult.total_questions}</div>
+                            
+                            <div className={styles.quizAnswerReview}>
+                              {quizResult.questions.map((q, idx) => (
+                                <div key={q.id} className={styles.reviewItem}>
+                                  <div className={styles.reviewText}>
+                                    {idx + 1}. {q.question_text}
+                                  </div>
+                                  <div className={styles.reviewAns}>
+                                    <span className={q.is_correct ? styles.reviewCorrect : styles.reviewIncorrect}>
+                                      Your Answer: {q.student_answer || "None"} {q.is_correct ? "✓" : "✗"}
+                                    </span>
+                                    {!q.is_correct && (
+                                      <span className={styles.reviewCorrect}>
+                                        Correct: {q.correct_answer}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className={styles.reviewExp}>
+                                    {q.explanation}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+
+                            <button className={styles.submitBtn} style={{ marginTop: "1rem", alignSelf: "center" }} onClick={() => handleTriggerAction("quiz")}>
+                              Retake Quiz
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ) : activeAction === "summarize" && summary ? (
+                      // 4. Topic Summary View
+                      <div className={styles.panelCard}>
+                        <span className={styles.stepTitle}>Concise Summary</span>
+                        <div 
+                          className={styles.stepBody} 
+                          style={{ whiteSpace: "pre-wrap", lineHeight: 1.5 }}
+                        >
+                          {summary}
+                        </div>
+                      </div>
+                    ) : activeAction === "recall" && recall ? (
+                      // 5. Active Recall View
+                      <div className={styles.panelCard}>
+                        <div className={styles.learnStep}>
+                          <span className={styles.stepTitle}>Active Recall Question</span>
+                          <p className={styles.stepBody} style={{ fontWeight: 600, fontSize: "1.05rem", textAlign: "center", padding: "1.5rem 0" }}>
+                            "{recall.question}"
+                          </p>
+                          
+                          <div className={styles.checkContainer} style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+                            <textarea
+                              className={styles.inputField}
+                              placeholder="Formulate your answer mentally or write it here to self-check..."
+                              rows={3}
+                              value={recallAnswer}
+                              onChange={(e) => setRecallAnswer(e.target.value)}
+                              disabled={isRecallRevealed}
+                            />
+                            
+                            {!isRecallRevealed ? (
+                              <button className={styles.submitBtn} style={{ width: "100%" }} onClick={() => setIsRecallRevealed(true)}>
+                                Reveal Correct Answer
+                              </button>
+                            ) : (
+                              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", width: "100%", borderTop: "1px solid var(--border-light)", paddingTop: "1rem", marginTop: "0.5rem" }}>
+                                <span style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--success)" }}>Reveal:</span>
+                                <p style={{ fontSize: "0.9rem", color: "var(--text-primary)", lineHeight: 1.5 }}>{recall.answer}</p>
+                                
+                                <button className={styles.submitBtn} style={{ background: "rgba(255,255,255,0.05)", border: "1px solid var(--border-light)", marginTop: "1rem", width: "100%" }} onClick={() => handleTriggerAction("recall")}>
+                                  Next Flashcard
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ) : activeAction === "clarify" ? (
+                      // 6. Clarify Chat Workspace
+                      <div className={styles.chatContainer}>
+                        <div className={styles.chatHistory}>
+                          {chatMessages.length === 0 ? (
+                            <div className={styles.emptyState} style={{ margin: "auto" }}>
+                              Ask any specific question about {selectedTopic.name} to start.
+                            </div>
+                          ) : (
+                            chatMessages.map((msg, idx) => (
+                              <div
+                                key={idx}
+                                className={`${styles.chatMessage} ${
+                                  msg.role === "user" ? styles.chatMessageUser : styles.chatMessageAssistant
+                                }`}
+                              >
+                                {msg.content}
+                              </div>
+                            ))
+                          )}
+                          <div ref={chatBottomRef} />
+                        </div>
+
+                        <form onSubmit={handleSendClarifyMessage} className={styles.chatInputGroup}>
+                          <input
+                            type="text"
+                            placeholder="I don't understand why..."
+                            className={styles.chatInput}
+                            value={chatInput}
+                            onChange={(e) => setChatInput(e.target.value)}
+                          />
+                          <button type="submit" className={styles.chatSendBtn}>
+                            Ask Tutor
+                          </button>
+                        </form>
+                      </div>
+                    ) : (
+                      // Placeholder when a topic is selected but no action is triggered
+                      <div className={styles.emptyState}>
+                        Select one of the actions above to start learning this topic.
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </AppShell>
+  );
+}

@@ -236,3 +236,85 @@ class LearningGoalDetailResponse(BaseModel):
     }
 
 
+class TopicResponse(BaseModel):
+    id: int
+    document_id: int
+    name: str
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
+
+
+class TopicDetailResponse(BaseModel):
+    id: int
+    document_id: int
+    name: str
+    summary: Optional[str] = None
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
+
+
+class LessonDetailResponse(BaseModel):
+    id: int
+    topic_id: int
+    concept: str
+    example: str
+    understanding_question: str
+    understanding_answer: str
+    understanding_explanation: str
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
+
+
+class PracticeExerciseDetailResponse(BaseModel):
+    id: int
+    topic_id: int
+    question: str
+    correct_answer: str
+    explanation: str
+    student_answer: Optional[str] = None
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
+
+
+class RecallQuestionDetailResponse(BaseModel):
+    id: int
+    topic_id: int
+    question: str
+    answer: str
+    created_at: datetime
+
+    model_config = {
+        "from_attributes": True
+    }
+
+
+class ClarifyMessageRequest(BaseModel):
+    content: str
+
+
+class DocumentWorkspaceResponse(BaseModel):
+    id: int
+    filename: str
+    file_type: str
+    file_size: int
+    created_at: datetime
+    topics: List[TopicResponse]
+
+    model_config = {
+        "from_attributes": True
+    }
+
+
+

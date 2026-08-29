@@ -137,6 +137,14 @@ def init_db():
             except Exception:
                 pass # Already exists
 
+            # Add topic_id to quizzes
+            try:
+                conn.execute(text("ALTER TABLE quizzes ADD COLUMN topic_id INTEGER;"))
+                conn.commit()
+                print("Migration: Added topic_id to quizzes table.")
+            except Exception:
+                pass # Already exists
+
             # 3. Add topic_id to quiz_questions
             try:
                 conn.execute(text("ALTER TABLE quiz_questions ADD COLUMN topic_id INTEGER;"))

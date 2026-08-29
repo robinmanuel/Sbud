@@ -152,6 +152,13 @@ class Document(Base):
         cascade="all, delete-orphan"
     )
 
+    # One-to-many relationship with Topic
+    topics = relationship(
+        "Topic",
+        back_populates="document",
+        cascade="all, delete-orphan"
+    )
+
 
 class DocumentChunk(Base):
     """
@@ -207,6 +214,13 @@ class Quiz(Base):
     user = relationship("User", back_populates="quizzes")
     document = relationship("Document", back_populates="quizzes")
     learning_goal = relationship("LearningGoal", back_populates="quizzes")
+    
+    topic_id = Column(
+        Integer,
+        ForeignKey("topics.id", ondelete="SET NULL"),
+        nullable=True
+    )
+    topic = relationship("Topic", back_populates="quizzes")
     
     # Child relationship
     questions = relationship("QuizQuestion", back_populates="quiz", cascade="all, delete-orphan")
@@ -345,4 +359,89 @@ class LearningGoalTopic(Base):
 
     # Reference back to parent goal
     learning_goal = relationship("LearningGoal", back_populates="topics")
+
+
+class Topic(Base):
+    """
+    SQLAlchemy model representing an extracted topic of a study document.
+    """
+    __tablename__ = "topics"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(
+        Integer,
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    name = Column(String, nullable=False)
+    summary = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    document = relationship("Document", back_populates="topics")
+    lessons = relationship("Lesson", back_populates="topic", cascade="all, delete-orphan")
+    practices = relationship("PracticeExercise", back_populates="topic", cascade="all, delete-orphan")
+    recalls = relationship("RecallQuestion", back_populates="topic", cascade="all, delete-orphan")
+    quizzes = relationship("Quiz", back_populates="topic", cascade="all, delete-orphan")
+
+
+class Lesson(Base):
+    """
+    SQLAlchemy model representing a progressive study lesson for a topic.
+    """
+    __tablename__ = "lessons"
+
+    id = Column(Integer, primary_key=True, index=True)
+    topic_id = Column(
+        Integer,
+        ForeignKey("topics.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    concept = Column(Text, nullable=False)
+    example = Column(Text, nullable=False)
+    understanding_question = Column(Text, nullable=False)
+    understanding_answer = Column(Text, nullable=False)
+    understanding_explanation = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    topic = relationship("Topic", back_populates="lessons")
+
+
+class PracticeExercise(Base):
+    """
+    SQLAlchemy model representing a practice question for a topic.
+    """
+    __tablename__ = "practice_exercises"
+
+    id = Column(Integer, primary_key=True, index=True)
+    topic_id = Column(
+        Integer,
+        ForeignKey("topics.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    question = Column(Text, nullable=False)
+    correct_answer = Column(Text, nullable=False)
+    explanation = Column(Text, nullable=False)
+    student_answer = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    topic = relationship("Topic", back_populates="practices")
+
+
+class RecallQuestion(Base):
+    """
+    SQLAlchemy model representing an active recall prompt for a topic.
+    """
+    __tablename__ = "recall_questions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    topic_id = Column(
+        Integer,
+        ForeignKey("topics.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    question = Column(Text, nullable=False)
+    answer = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+
+    topic = relationship("Topic", back_populates="recalls")
 

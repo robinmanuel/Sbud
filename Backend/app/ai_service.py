@@ -62,6 +62,46 @@ GOAL_GENERATOR_INSTRUCTION = (
     "3. Focus on logical, step-by-step breakdown of concepts needed to answer: 'Does this student actually know this?'"
 )
 
+TOPIC_EXTRACTOR_INSTRUCTION = (
+    "You are an expert academic curriculum designer. Your task is to analyze the provided study material "
+    "and identify the 5 to 8 distinct, key learning topics or concepts taught in this material.\n\n"
+    "Generate a JSON list of strings representing these topics. Each topic name must be very short, concise, and clear (1-3 words max, e.g. 'Mitochondria', 'Cell membrane', 'Osmosis').\n"
+    "Your output MUST be a valid JSON array of strings. Do not include markdown code fence formatting (like ```json ... ```) in your raw response."
+)
+
+LESSON_GENERATOR_INSTRUCTION = (
+    "You are an expert study tutor. Your task is to generate a progressive study lesson for a specific topic, based on the provided source material context.\n\n"
+    "Generate a JSON object matching the following output constraints:\n"
+    "1. Output MUST be a valid JSON object. Do not include markdown code fence formatting (like ```json ... ```).\n"
+    "2. The object MUST contain the following keys exactly:\n"
+    "   - \"concept\": A clear, progressive explanation of the concept tailored for a student (1-3 paragraphs).\n"
+    "   - \"example\": A concrete, practical example or analogy demonstrating this concept in action.\n"
+    "   - \"understanding_question\": A relevant single check-understanding question to test if the student understood this explanation.\n"
+    "   - \"understanding_answer\": The correct answer to the check question.\n"
+    "   - \"understanding_explanation\": A brief explanation of the correct answer.\n"
+    "3. Focus on teaching effectively and keeping text engaging."
+)
+
+PRACTICE_GENERATOR_INSTRUCTION = (
+    "You are an expert tutor. Your task is to generate a practical application problem/question requiring the student to apply the concept of a specific topic, using the provided study material context.\n\n"
+    "Generate a JSON object matching the following output constraints:\n"
+    "1. Output MUST be a valid JSON object. Do not include markdown code fence formatting.\n"
+    "2. The object MUST contain the following keys exactly:\n"
+    "   - \"question\": The question text (e.g. an exercise, word problem, or application task).\n"
+    "   - \"correct_answer\": The correct numerical or concise text answer.\n"
+    "   - \"explanation\": A step-by-step breakdown of how to solve the problem and reach that correct answer.\n"
+    "3. Do not make multiple-choice questions here. This is a practice application problem."
+)
+
+RECALL_GENERATOR_INSTRUCTION = (
+    "You are an expert tutor. Your task is to generate an active recall question for a specific topic, based on the provided study material context.\n\n"
+    "Generate a JSON object matching the following output constraints:\n"
+    "1. Output MUST be a valid JSON object. Do not include markdown code fence formatting.\n"
+    "2. The object MUST contain the following keys exactly:\n"
+    "   - \"question\": An open-ended question designed for active recall (e.g., 'What are the three main functions of X?').\n"
+    "   - \"answer\": The detailed correct answer to compare against."
+)
+
 class AIService:
     mock_model = None
 
@@ -91,6 +131,26 @@ class AIService:
             return genai.GenerativeModel(
                 "gemini-3.6-flash",
                 system_instruction=GOAL_GENERATOR_INSTRUCTION
+            )
+        elif feature == "topic_extraction":
+            return genai.GenerativeModel(
+                "gemini-3.6-flash",
+                system_instruction=TOPIC_EXTRACTOR_INSTRUCTION
+            )
+        elif feature == "lesson_generation":
+            return genai.GenerativeModel(
+                "gemini-3.6-flash",
+                system_instruction=LESSON_GENERATOR_INSTRUCTION
+            )
+        elif feature == "practice_generation":
+            return genai.GenerativeModel(
+                "gemini-3.6-flash",
+                system_instruction=PRACTICE_GENERATOR_INSTRUCTION
+            )
+        elif feature == "recall_generation":
+            return genai.GenerativeModel(
+                "gemini-3.6-flash",
+                system_instruction=RECALL_GENERATOR_INSTRUCTION
             )
         else:
             return genai.GenerativeModel(
@@ -392,4 +452,164 @@ class AIService:
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail=f"Tutor goal generator invocation failed: {str(e)}"
+            )
+
+    @classmethod
+    async def generate_topics(cls, document_text: str, user_id: int, db: Session) -> List[str]:
+        feature = "summaries" # Reuse summaries quota or limits
+        cls.check_rate_limit(user_id, feature, db)
+
+        # Truncate content preview to prevent prompt bloating (e.g. first 20k characters)
+        prompt = f"[STUDY MATERIAL]\n{document_text[:20000]}\n\nExtract the core topics."
+        
+        # Check Cache
+        cached_result = cls.get_cached_response(prompt, "topic_extraction", db)
+        if cached_result:
+            return json.loads(cached_result)
+
+        model_instance = cls.get_model("topic_extraction")
+        try:
+            response = await model_instance.generate_content_async(
+                contents=[prompt],
+                generation_config={"response_mime_type": "application/json"}
+            )
+            raw_text = response.text
+            topics = json.loads(raw_text)
+            
+            cls.save_cached_response(prompt, raw_text, "topic_extraction", db)
+            cls.log_usage(user_id, feature, "gemini-3.6-flash", len(prompt)//4, len(raw_text)//4, db)
+            return topics
+        except Exception as e:
+            print(f"WARNING: Topic extraction AI call failed: {e}")
+            # Fallback topics in case of AI failures
+            return ["Core Concepts", "Key Terms", "Formulas & Equations"]
+
+    @classmethod
+    async def generate_lesson(cls, topic_name: str, document_text: str, user_id: int, db: Session) -> dict:
+        feature = "summaries"
+        cls.check_rate_limit(user_id, feature, db)
+
+        # Get relevant context from doc
+        prompt = (
+            f"[STUDY MATERIAL CONTEXT]\n{document_text[:15000]}\n\n"
+            f"Generate a progressive study lesson teaching the topic '{topic_name}' using ONLY the context material."
+        )
+
+        cache_key = f"lesson:{topic_name}:{document_text[:5000]}"
+        cached_result = cls.get_cached_response(cache_key, "lesson_generation", db)
+        if cached_result:
+            return json.loads(cached_result)
+
+        model_instance = cls.get_model("lesson_generation")
+        try:
+            response = await model_instance.generate_content_async(
+                contents=[prompt],
+                generation_config={"response_mime_type": "application/json"}
+            )
+            raw_text = response.text
+            lesson_data = json.loads(raw_text)
+
+            cls.save_cached_response(cache_key, raw_text, "lesson_generation", db)
+            cls.log_usage(user_id, feature, "gemini-3.6-flash", len(prompt)//4, len(raw_text)//4, db)
+            return lesson_data
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to generate study lesson: {str(e)}"
+            )
+
+    @classmethod
+    async def generate_practice(cls, topic_name: str, document_text: str, user_id: int, db: Session) -> dict:
+        feature = "quiz_generation"
+        cls.check_rate_limit(user_id, feature, db)
+
+        prompt = (
+            f"[STUDY MATERIAL CONTEXT]\n{document_text[:15000]}\n\n"
+            f"Generate an application practice question/problem for the topic '{topic_name}'."
+        )
+
+        cache_key = f"practice:{topic_name}:{document_text[:5000]}"
+        cached_result = cls.get_cached_response(cache_key, "practice_generation", db)
+        if cached_result:
+            return json.loads(cached_result)
+
+        model_instance = cls.get_model("practice_generation")
+        try:
+            response = await model_instance.generate_content_async(
+                contents=[prompt],
+                generation_config={"response_mime_type": "application/json"}
+            )
+            raw_text = response.text
+            practice_data = json.loads(raw_text)
+
+            cls.save_cached_response(cache_key, raw_text, "practice_generation", db)
+            cls.log_usage(user_id, feature, "gemini-3.6-flash", len(prompt)//4, len(raw_text)//4, db)
+            return practice_data
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to generate practice question: {str(e)}"
+            )
+
+    @classmethod
+    async def generate_recall(cls, topic_name: str, document_text: str, user_id: int, db: Session) -> dict:
+        feature = "summaries"
+        cls.check_rate_limit(user_id, feature, db)
+
+        prompt = (
+            f"[STUDY MATERIAL CONTEXT]\n{document_text[:15000]}\n\n"
+            f"Generate an active recall question for the topic '{topic_name}'."
+        )
+
+        cache_key = f"recall:{topic_name}:{document_text[:5000]}"
+        cached_result = cls.get_cached_response(cache_key, "recall_generation", db)
+        if cached_result:
+            return json.loads(cached_result)
+
+        model_instance = cls.get_model("recall_generation")
+        try:
+            response = await model_instance.generate_content_async(
+                contents=[prompt],
+                generation_config={"response_mime_type": "application/json"}
+            )
+            raw_text = response.text
+            recall_data = json.loads(raw_text)
+
+            cls.save_cached_response(cache_key, raw_text, "recall_generation", db)
+            cls.log_usage(user_id, feature, "gemini-3.6-flash", len(prompt)//4, len(raw_text)//4, db)
+            return recall_data
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to generate active recall question: {str(e)}"
+            )
+
+    @classmethod
+    async def generate_topic_summary(cls, topic_name: str, document_text: str, user_id: int, db: Session) -> str:
+        feature = "summaries"
+        cls.check_rate_limit(user_id, feature, db)
+
+        prompt = (
+            f"[CONTEXT MATERIAL]\n{document_text[:15000]}\n\n"
+            f"Generate a concise, high-quality, structured summary of the topic '{topic_name}' using ONLY the context material. "
+            "Use bullet points where appropriate. Keep it concise but comprehensive enough for study notes."
+        )
+
+        cache_key = f"summary:{topic_name}:{document_text[:5000]}"
+        cached_result = cls.get_cached_response(cache_key, "summaries", db)
+        if cached_result:
+            return cached_result
+
+        model_instance = cls.get_model("chat")
+        try:
+            response = await model_instance.generate_content_async(contents=[prompt])
+            reply = response.text
+
+            cls.save_cached_response(cache_key, reply, "summaries", db)
+            cls.log_usage(user_id, feature, "gemini-3.6-flash", len(prompt)//4, len(reply)//4, db)
+            return reply
+        except Exception as e:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"Failed to generate topic summary: {str(e)}"
             )

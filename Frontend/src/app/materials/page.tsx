@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import styles from "./materials.module.css";
@@ -15,147 +15,178 @@ interface StudyDocument {
   created_at: string;
 }
 
+interface SavedSummary {
+  id: number;
+  topic_name: string;
+  document_name: string;
+  created_at: string;
+}
+
+interface SavedQuiz {
+  id: number;
+  title: string;
+  score: number;
+  total_questions: number;
+  created_at: string;
+}
+
+interface SavedFlashcard {
+  id: number;
+  topic_name: string;
+  question: string;
+  created_at: string;
+}
+
+interface PreviousWork {
+  summaries: SavedSummary[];
+  quizzes: SavedQuiz[];
+  flashcards: SavedFlashcard[];
+}
+
+type LibraryFilter = "all" | "documents" | "summaries" | "quizzes" | "flashcards";
+
 export default function MaterialsPage() {
+  const [activeFilter, setActiveFilter] = useState<LibraryFilter>("all");
   const [documents, setDocuments] = useState<StudyDocument[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [isUploading, setIsUploading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
-  const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
-  const [isGeneratingQuiz, setIsGeneratingQuiz] = useState<number | null>(null); // holds docId being generated
+  const [previousWork, setPreviousWork] = useState<PreviousWork>({
+    summaries: [],
+    quizzes: [],
+    flashcards: []
+  });
   
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Loading & Error states
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Immersive Reader View States
+  const [readerDoc, setReaderDoc] = useState<StudyDocument | null>(null);
+  const [readerText, setReaderText] = useState<string>("");
+  const [loadingReader, setLoadingReader] = useState<boolean>(false);
+
+  // Detail Modals Review States
+  const [activeSummary, setActiveSummary] = useState<SavedSummary | null>(null);
+  const [summaryBody, setSummaryBody] = useState<string>("");
+  const [loadingSummaryBody, setLoadingSummaryBody] = useState<boolean>(false);
+
+  const [activeFlashcard, setActiveFlashcard] = useState<SavedFlashcard | null>(null);
+  const [flashcardAnswer, setFlashcardAnswer] = useState<string>("");
+  const [revealFlashcardAns, setRevealFlashcardAns] = useState<boolean>(false);
+
   const router = useRouter();
 
-  // Load study documents list
-  const loadDocuments = async () => {
+  // Load documents and previous study items
+  const loadLibraryData = async () => {
     try {
-      const resp = await fetch(`${API_BASE}/documents`, {
+      // 1. Fetch documents
+      const docResp = await fetch(`${API_BASE}/documents`, {
         method: "GET",
         credentials: "include",
       });
-      if (resp.ok) {
-        const data = await resp.json();
-        setDocuments(data);
-      } else {
-        throw new Error("Failed to load documents.");
+      if (!docResp.ok) throw new Error("Could not load study documents.");
+      const docData = await docResp.json();
+      setDocuments(docData);
+
+      // 2. Fetch previous work logs (summaries, quizzes, cards)
+      const workResp = await fetch(`${API_BASE}/materials/previous-work`, {
+        method: "GET",
+        credentials: "include",
+      });
+      if (workResp.ok) {
+        const workData = await workResp.json();
+        setPreviousWork(workData);
       }
-    } catch (e: any) {
-      setError(e.message || "Failed to load documents list.");
+    } catch (err: any) {
+      setError(err.message || "Failed to load study library.");
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadDocuments();
+    loadLibraryData();
   }, []);
 
-  const triggerFileInput = () => {
-    fileInputRef.current?.click();
-  };
-
-  // Upload PDF material
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    if (file.type !== "application/pdf") {
-      setUploadError("Only PDF documents are supported for study materials.");
-      return;
-    }
-
-    // Limit to 10MB
-    if (file.size > 10 * 1024 * 1024) {
-      setUploadError("File size exceeds 10MB limit.");
-      return;
-    }
-
-    setIsUploading(true);
-    setUploadError(null);
-    setUploadSuccess(null);
-
-    const formData = new FormData();
-    formData.append("file", file);
-
-    try {
-      const resp = await fetch(`${API_BASE}/documents`, {
-        method: "POST",
-        credentials: "include",
-        body: formData,
-      });
-
-      if (!resp.ok) {
-        const errData = await resp.json().catch(() => ({}));
-        throw new Error(errData.detail || "Failed to upload file to backend.");
-      }
-
-      setUploadSuccess(`Successfully uploaded "${file.name}"!`);
-      await loadDocuments();
-    } catch (err: any) {
-      setUploadError(err.message || "Network failure during upload.");
-    } finally {
-      setIsUploading(false);
-      e.target.value = "";
-    }
-  };
-
-  // Delete PDF material
-  const handleDeleteDocument = async (docId: number) => {
-    if (!confirm("Are you sure you want to delete this study material?")) return;
-
-    setUploadError(null);
-    setUploadSuccess(null);
+  const handleDeleteDocument = async (e: React.MouseEvent, docId: number) => {
+    e.stopPropagation();
+    if (!confirm("Are you sure you want to delete this study material? All topics, saved quizzes, and progress will be deleted.")) return;
 
     try {
       const resp = await fetch(`${API_BASE}/documents/${docId}`, {
         method: "DELETE",
-        credentials: "include",
+        credentials: "include"
       });
-
-      if (!resp.ok) {
-        throw new Error("Failed to delete study material.");
-      }
-
+      if (!resp.ok) throw new Error("Deletion failed.");
+      
       setDocuments((prev) => prev.filter((d) => d.id !== docId));
-      setUploadSuccess("Material deleted successfully.");
+      // Refresh previous work to wipe out cascades
+      loadLibraryData();
     } catch (err: any) {
-      setUploadError(err.message || "Failed to delete study material.");
+      alert(err.message || "Failed to delete document.");
     }
   };
 
-  // Generate quiz and redirect to quizzes page
-  const handleGenerateQuiz = async (docId: number) => {
-    setIsGeneratingQuiz(docId);
-    setUploadError(null);
-    setUploadSuccess(null);
+  // Open Distraction-Free Reader View
+  const handleOpenReader = async (doc: StudyDocument) => {
+    setReaderDoc(doc);
+    setLoadingReader(true);
+    setReaderText("");
     try {
-      const resp = await fetch(`${API_BASE}/quizzes`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        credentials: "include",
-        body: JSON.stringify({ document_id: docId }),
+      const resp = await fetch(`${API_BASE}/documents/${doc.id}/text`, {
+        method: "GET",
+        credentials: "include"
       });
-
-      if (!resp.ok) {
-        const errData = await resp.json().catch(() => ({}));
-        throw new Error(errData.detail || "Failed to generate quiz from study guide.");
-      }
-
+      if (!resp.ok) throw new Error();
       const data = await resp.json();
-      setUploadSuccess("Quiz generated successfully!");
-      // Redirect to quizzes page with active quiz ID to take it
-      router.push(`/quizzes?quizId=${data.id}`);
-    } catch (err: any) {
-      setUploadError(err.message || "Failed to generate quiz.");
+      setReaderText(data.text || "No text could be extracted from this document.");
+    } catch (e) {
+      setReaderText("Error loading document text.");
     } finally {
-      setIsGeneratingQuiz(null);
+      setLoadingReader(false);
     }
   };
 
-  // Format bytes helper
+  // Open Saved Summary Modal
+  const handleOpenSummary = async (sum: SavedSummary) => {
+    setActiveSummary(sum);
+    setLoadingSummaryBody(true);
+    setSummaryBody("");
+    try {
+      const resp = await fetch(`${API_BASE}/topics/${sum.id}/summarize`, {
+        method: "POST",
+        credentials: "include"
+      });
+      if (!resp.ok) throw new Error();
+      const data = await resp.json();
+      setSummaryBody(data.summary);
+    } catch (e) {
+      setSummaryBody("Error loading topic summary.");
+    } finally {
+      setLoadingSummaryBody(false);
+    }
+  };
+
+  // Open Saved Flashcard Modal
+  const handleOpenFlashcard = async (fc: SavedFlashcard) => {
+    setActiveFlashcard(fc);
+    setRevealFlashcardAns(false);
+    setFlashcardAnswer("");
+    try {
+      const resp = await fetch(`${API_BASE}/topics/${fc.topic_name}/recall`, {
+        method: "POST",
+        credentials: "include"
+      });
+      // Fallback find if query fail
+      if (resp.ok) {
+        const data = await resp.json();
+        setFlashcardAnswer(data.answer);
+      } else {
+        setFlashcardAnswer("Click 'Change Topic' in the assistant workspace to review flashcards.");
+      }
+    } catch (e) {
+      setFlashcardAnswer("Click 'Change Topic' in the assistant workspace to review flashcards.");
+    }
+  };
+
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return "0 B";
     const k = 1024;
@@ -167,124 +198,280 @@ export default function MaterialsPage() {
   return (
     <AppShell>
       <div className={styles.container}>
-        {/* Native Hidden File Input */}
-        <input 
-          type="file" 
-          accept=".pdf"
-          ref={fileInputRef} 
-          style={{ display: "none" }}
-          onChange={handleFileUpload} 
-        />
-
-        <div className={styles.headerRow}>
-          <div>
-            <h1 className={styles.title}>Study Guides & Notes</h1>
-            <p className={styles.desc}>Upload textbook chapters or notes (PDF format, max 10MB) to generate quiz questions and unlock vector-based chat context matching.</p>
-          </div>
-
-          <button 
-            className={styles.uploadBtn}
-            onClick={triggerFileInput}
-            disabled={isUploading}
-          >
-            {isUploading ? (
-              <>
-                <div className={styles.spinnerMini} />
-                <span>Uploading...</span>
-              </>
-            ) : (
-              <>
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className={styles.uploadIcon}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5m-13.5-9L12 3m0 0 4.5 4.5M12 3v13.5" />
-                </svg>
-                <span>Upload PDF</span>
-              </>
-            )}
-          </button>
-        </div>
-
-        {/* Upload Alert Badges */}
-        {uploadError && <div className={styles.alertError}>{uploadError}</div>}
-        {uploadSuccess && <div className={styles.alertSuccess}>{uploadSuccess}</div>}
-
-        {loading ? (
-          <div className={styles.loaderArea}>
-            <div className={styles.spinner} />
-            <p>Loading study materials list...</p>
-          </div>
-        ) : error ? (
-          <div className={styles.errorArea}>{error}</div>
-        ) : documents.length === 0 ? (
-          <div className={styles.emptyState}>
-            <div className={styles.emptyIcon}>
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
-              </svg>
-            </div>
-            <h3>No Documents Uploaded</h3>
-            <p>Once you upload PDF notes, they will appear here. SBud will automatically segment them for retrieval context and prepare practice quizzes.</p>
-            <button className={styles.emptyActionBtn} onClick={triggerFileInput}>Upload Notes Now</button>
-          </div>
-        ) : (
-          <div className={styles.grid}>
-            {documents.map((doc) => (
-              <div key={doc.id} className={styles.docCard}>
-                <div className={styles.docInfo}>
-                  <div className={styles.docIconWrapper}>
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
-                    </svg>
-                  </div>
-                  <div className={styles.docMeta}>
-                    <h3 className={styles.docTitle} title={doc.filename}>{doc.filename}</h3>
-                    <span className={styles.docSize}>{formatBytes(doc.file_size)}</span>
-                  </div>
-                </div>
-
-                <div className={styles.docActions}>
-                  <button 
-                    className={styles.actionBtnPrimary}
-                    onClick={() => handleGenerateQuiz(doc.id)}
-                    disabled={isGeneratingQuiz !== null}
-                  >
-                    {isGeneratingQuiz === doc.id ? (
-                      <>
-                        <div className={styles.spinnerMini} />
-                        <span>Generating...</span>
-                      </>
-                    ) : (
-                      <>
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={styles.btnIcon}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 0 0 2.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 0 0-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75 2.25 2.25 0 0 0-.1-.664m-5.8 0A2.251 2.251 0 0 1 13.5 2.25H15c1.03 0 1.9.693 2.166 1.638m-7.377 2.24a.75.75 0 0 1 1.03.31l1.53 2.548a.75.75 0 0 1-.31 1.03l-1.53.918a.75.75 0 0 1-1.03-.31l-1.53-2.548a.75.75 0 0 1 .31-1.03l1.53-.918Z" />
-                        </svg>
-                        <span>Generate Quiz</span>
-                      </>
-                    )}
-                  </button>
-                  <button 
-                    className={styles.actionBtnSecondary}
-                    onClick={() => router.push(`/assistant?q=Explain key concepts from the uploaded guide: ${doc.filename}`)}
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={styles.btnIcon}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 0 1-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8Z" />
-                    </svg>
-                    <span>Ask SBud</span>
-                  </button>
-                  <button 
-                    className={styles.actionBtnDanger}
-                    onClick={() => handleDeleteDocument(doc.id)}
-                    title="Delete Study Material"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className={styles.btnIcon} style={{ margin: 0 }}>
-                      <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0" />
-                    </svg>
-                  </button>
-                </div>
+        {/* Left Sidebar Filter Column */}
+        <aside className={styles.sidebar}>
+          <div className={styles.sidebarTitle}>Library Filter</div>
+          <div className={styles.sidebarMenu}>
+            {[
+              { id: "all", name: "All Files", emoji: "🗂️" },
+              { id: "documents", name: "Documents", emoji: "📄" },
+              { id: "summaries", name: "Summaries", emoji: "📝" },
+              { id: "quizzes", name: "Quizzes", emoji: "📝" },
+              { id: "flashcards", name: "Flashcards", emoji: "🧠" }
+            ].map((link) => (
+              <div 
+                key={link.id} 
+                className={`${styles.sidebarLink} ${activeFilter === link.id ? styles.sidebarLinkActive : ""}`}
+                onClick={() => setActiveFilter(link.id as LibraryFilter)}
+              >
+                <span className={styles.sidebarLinkIcon}>{link.emoji}</span>
+                <span>{link.name}</span>
               </div>
             ))}
           </div>
-        )}
+        </aside>
+
+        {/* Right Library Content Column */}
+        <main className={styles.mainArea}>
+          {error && (
+            <div style={{ padding: "1rem", backgroundColor: "rgba(239,68,68,0.1)", border: "1px solid var(--danger)", borderRadius: "12px", color: "var(--danger)", fontSize: "0.85rem" }}>
+              {error}
+            </div>
+          )}
+
+          {loading ? (
+            <div className={styles.loader} style={{ padding: "4rem 0" }}>
+              <div className={styles.spinner} style={{ margin: "auto" }} />
+              <p style={{ marginTop: "1rem" }}>Loading library materials...</p>
+            </div>
+          ) : (
+            <>
+              {/* 1. Documents Section */}
+              {(activeFilter === "all" || activeFilter === "documents") && (
+                <div>
+                  <div className={styles.sectionHeader}>
+                    <h2 className={styles.sectionTitle}>
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" style={{ width: "20px", height: "20px" }}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                      </svg>
+                      Study Documents
+                    </h2>
+                    <span style={{ fontSize: "0.8rem", color: "var(--text-muted)" }}>{documents.length} Files</span>
+                  </div>
+
+                  {documents.length === 0 ? (
+                    <div className={styles.workCard} style={{ textAlign: "center", padding: "2rem", color: "var(--text-muted)" }}>
+                      No documents uploaded yet. Go to Assistant to upload material.
+                    </div>
+                  ) : (
+                    <div className={styles.grid}>
+                      {documents.map((doc) => (
+                        <div key={doc.id} className={styles.docCard} onClick={() => handleOpenReader(doc)}>
+                          <div className={styles.docInfo}>
+                            <span className={styles.docIcon}>
+                              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 0 0-3.375-3.375h-1.5A1.125 1.125 0 0 1 13.5 7.125v-1.5a3.375 3.375 0 0 0-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 0 0-9-9Z" />
+                              </svg>
+                            </span>
+                            <div className={styles.docDetails}>
+                              <span className={styles.docTitle}>
+                                {doc.filename.startsWith("Custom Curriculum: ") 
+                                  ? doc.filename.replace("Custom Curriculum: ", "").replace(".pdf", "")
+                                  : doc.filename
+                                }
+                              </span>
+                              <span className={styles.docMeta}>{formatBytes(doc.file_size)}</span>
+                            </div>
+                          </div>
+                          
+                          <button 
+                            className={styles.deleteBtn}
+                            onClick={(e) => handleDeleteDocument(e, doc.id)}
+                            title="Delete Material"
+                          >
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" style={{ width: "16px", height: "16px" }}>
+                              <path strokeLinecap="round" strokeLinejoin="round" d="m14.74 9-.34 9m-4.72 0-.34-9m9.96-3-3.2 13.6a2 2 0 0 1-2.1 1.4H9.7a2 2 0 0 1-2.1-1.4L4.4 6m8-3V1.5a1.5 1.5 0 0 1 3 0V3M4 6h16" />
+                            </svg>
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* 2. Previous Work Section */}
+              {activeFilter !== "documents" && (
+                <div>
+                  <div className={styles.sectionHeader} style={{ marginTop: "1rem" }}>
+                    <h2 className={styles.sectionTitle}>
+                      <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" style={{ width: "20px", height: "20px" }}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
+                      </svg>
+                      Previous Saved Work
+                    </h2>
+                  </div>
+
+                  <div className={styles.grid}>
+                    {/* Summaries filter list */}
+                    {(activeFilter === "all" || activeFilter === "summaries") && 
+                      previousWork.summaries.map((sum) => (
+                        <div key={sum.id} className={styles.workCard} onClick={() => handleOpenSummary(sum)}>
+                          <div className={styles.workHeader}>
+                            <span className={`${styles.workBadge} ${styles.badgeSummary}`}>Summary</span>
+                            <span className={styles.workMeta}>{sum.document_name.split(".")[0]}</span>
+                          </div>
+                          <h3 className={styles.workTitle}>{sum.topic_name}</h3>
+                          <span className={styles.workMeta}>Saved during study session</span>
+                        </div>
+                      ))
+                    }
+
+                    {/* Quizzes filter list */}
+                    {(activeFilter === "all" || activeFilter === "quizzes") && 
+                      previousWork.quizzes.map((quiz) => (
+                        <div key={quiz.id} className={styles.workCard} onClick={() => router.push(`/assistant`)}>
+                          <div className={styles.workHeader}>
+                            <span className={`${styles.workBadge} ${styles.badgeQuiz}`}>Quiz Result</span>
+                            <span className={styles.workMeta}>Graded</span>
+                          </div>
+                          <h3 className={styles.workTitle}>{quiz.title}</h3>
+                          <span className={styles.workMeta} style={{ color: "var(--success)", fontWeight: 700 }}>
+                            Score: {quiz.score} / {quiz.total_questions}
+                          </span>
+                        </div>
+                      ))
+                    }
+
+                    {/* Flashcards filter list */}
+                    {(activeFilter === "all" || activeFilter === "flashcards") && 
+                      previousWork.flashcards.map((fc) => (
+                        <div key={fc.id} className={styles.workCard} onClick={() => handleOpenFlashcard(fc)}>
+                          <div className={styles.workHeader}>
+                            <span className={`${styles.workBadge} ${styles.badgeFlashcard}`}>Flashcard</span>
+                            <span className={styles.workMeta}>{fc.topic_name}</span>
+                          </div>
+                          <h3 className={styles.workTitle}>"{fc.question}"</h3>
+                          <span className={styles.workMeta}>Click to reveal answer key</span>
+                        </div>
+                      ))
+                    }
+
+                    {/* Empty lists check */}
+                    {activeFilter === "summaries" && previousWork.summaries.length === 0 && (
+                      <div className={styles.emptyState} style={{ gridColumn: "1 / -1" }}>No saved summaries found.</div>
+                    )}
+                    {activeFilter === "quizzes" && previousWork.quizzes.length === 0 && (
+                      <div className={styles.emptyState} style={{ gridColumn: "1 / -1" }}>No completed quizzes found.</div>
+                    )}
+                    {activeFilter === "flashcards" && previousWork.flashcards.length === 0 && (
+                      <div className={styles.emptyState} style={{ gridColumn: "1 / -1" }}>No active recall flashcards created yet.</div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </main>
       </div>
+
+      {/* Immersive Distraction-Free Reader View Modal Overlay */}
+      {readerDoc && (
+        <div className={styles.readerOverlay}>
+          <div className={styles.readerCard}>
+            <header className={styles.readerHeader}>
+              <h2 className={styles.readerTitle}>
+                {readerDoc.filename.startsWith("Custom Curriculum: ") 
+                  ? readerDoc.filename.replace("Custom Curriculum: ", "").replace(".pdf", "")
+                  : readerDoc.filename
+                }
+              </h2>
+              <div className={styles.readerHeaderActions}>
+                <button 
+                  className={styles.studyBtn}
+                  onClick={() => router.push(`/assistant?docId=${readerDoc.id}`)}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" style={{ width: "16px", height: "16px" }}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" />
+                  </svg>
+                  Study this material
+                </button>
+                <button 
+                  className={styles.closeBtn}
+                  onClick={() => setReaderDoc(null)}
+                  title="Close Reader"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" style={{ width: "20px", height: "20px" }}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </header>
+            
+            <div className={styles.readerContent}>
+              {loadingReader ? (
+                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: "1rem" }}>
+                  <div className={styles.spinner} />
+                  <span>Preparing document view...</span>
+                </div>
+              ) : (
+                readerText
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Summary Review Modal */}
+      {activeSummary && (
+        <div className={styles.readerOverlay} onClick={() => setActiveSummary(null)}>
+          <div className={styles.detailModalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <div>
+                <span className={`${styles.workBadge} ${styles.badgeSummary}`}>Syllabus Summary</span>
+                <h3 className={styles.detailTitle} style={{ marginTop: "0.5rem" }}>{activeSummary.topic_name}</h3>
+                <span className={styles.detailSub}>{activeSummary.document_name.split(".")[0]}</span>
+              </div>
+              <button className={styles.closeBtn} onClick={() => setActiveSummary(null)}>✕</button>
+            </div>
+            
+            <div className={styles.detailBody} style={{ borderTop: "1px solid var(--border-light)", paddingTop: "1rem" }}>
+              {loadingSummaryBody ? (
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <div className={styles.spinner} style={{ width: "20px", height: "20px" }} />
+                  <span>Loading summary...</span>
+                </div>
+              ) : (
+                summaryBody
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Flashcard Review Modal */}
+      {activeFlashcard && (
+        <div className={styles.readerOverlay} onClick={() => setActiveFlashcard(null)}>
+          <div className={styles.detailModalCard} onClick={(e) => e.stopPropagation()} style={{ textAlign: "center" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+              <span className={`${styles.workBadge} ${styles.badgeFlashcard}`}>Flashcard selfcheck</span>
+              <button className={styles.closeBtn} onClick={() => setActiveFlashcard(null)}>✕</button>
+            </div>
+            
+            <div style={{ margin: "1.5rem 0" }}>
+              <span style={{ fontSize: "0.8rem", color: "var(--text-muted)", display: "block", marginBottom: "0.5rem" }}>Question:</span>
+              <p style={{ fontSize: "1.2rem", fontWeight: 700, color: "var(--text-primary)" }}>"{activeFlashcard.question}"</p>
+            </div>
+
+            <div style={{ borderTop: "1px solid var(--border-light)", paddingTop: "1.5rem" }}>
+              {!revealFlashcardAns ? (
+                <button 
+                  className={styles.studyBtn} 
+                  style={{ width: "100%", justifyContent: "center" }}
+                  onClick={() => setRevealFlashcardAns(true)}
+                >
+                  Reveal Correct Answer
+                </button>
+              ) : (
+                <div style={{ animation: "fadeIn 0.2s ease-out" }}>
+                  <span style={{ fontSize: "0.8rem", color: "var(--success)", display: "block", marginBottom: "0.5rem", fontWeight: 700 }}>Answer:</span>
+                  <p style={{ fontSize: "0.95rem", color: "var(--text-secondary)", lineHeight: 1.5 }}>{flashcardAnswer || "Loading answer..."}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </AppShell>
   );
 }
