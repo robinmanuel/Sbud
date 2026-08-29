@@ -32,19 +32,7 @@ export default function HomePage() {
   const [recentLearning, setRecentLearning] = useState<RecentLearning[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   
-  // Quick Explanation Widget State
-  const [selectedQuestion, setSelectedQuestion] = useState<string>("What's the difference between mitosis and meiosis?");
-  const [explanation, setExplanation] = useState<string>("");
-  const [loadingExplanation, setLoadingExplanation] = useState<boolean>(false);
-
   const router = useRouter();
-
-  const sampleQuestions = [
-    "What's the difference between mitosis and meiosis?",
-    "Why does water have high surface tension?",
-    "What is the relation between force, mass, and acceleration?",
-    "How do closures work in JavaScript?"
-  ];
 
   useEffect(() => {
     const fetchDashboard = async () => {
@@ -88,26 +76,6 @@ export default function HomePage() {
 
     fetchDashboard();
   }, []);
-
-  const handleFetchExplanation = async () => {
-    setLoadingExplanation(true);
-    setExplanation("");
-    try {
-      const resp = await fetch(`${API_BASE}/dashboard/quick-explanation`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ question: selectedQuestion })
-      });
-      if (!resp.ok) throw new Error();
-      const data = await resp.json();
-      setExplanation(data.explanation);
-    } catch (e) {
-      setExplanation("Failed to load explanation. Please check your API configuration.");
-    } finally {
-      setLoadingExplanation(false);
-    }
-  };
 
   const getTimeGreeting = () => {
     const hrs = new Date().getHours();
@@ -231,67 +199,6 @@ export default function HomePage() {
                     <div style={{ fontSize: "1.5rem", fontWeight: 800, color: "var(--accent-indigo)" }}>{stats.study_sessions}</div>
                     <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "0.25rem" }}>Study Sessions</div>
                   </div>
-                </div>
-              </div>
-
-              {/* Quick AI Explanations Widget */}
-              <div className={`${styles.card} ${styles.aiWidget}`}>
-                <div className={styles.aiHeader}>
-                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" style={{ width: "20px", height: "20px" }}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904 9 21l8.982-8.979M18 3.612V7c0 .771-.29 1.485-.767 2M10.875 3.875a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0ZM3 13.125C3 12.504 3.504 12 4.125 12h2.25c.621 0 1.125.504 1.125 1.125v5.25c0 .621-.504 1.125-1.125 1.125h-2.25A1.125 1.125 0 0 1 3 18.375v-5.25ZM9.75 8.625c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125v9.75c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125v-9.75ZM16.5 4.125c0-.621.504-1.125 1.125-1.125h2.25C20.496 3 21 3.504 21 4.125v14.25c0 .621-.504 1.125-1.125 1.125h-2.25a1.125 1.125 0 0 1-1.125-1.125V4.125Z" />
-                  </svg>
-                  Quick Explanation
-                </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-                  <label style={{ fontSize: "0.8rem", color: "var(--text-secondary)", fontWeight: 500 }}>Select a concept query:</label>
-                  <select 
-                    value={selectedQuestion} 
-                    onChange={(e) => {
-                      setSelectedQuestion(e.target.value);
-                      setExplanation("");
-                    }}
-                    style={{
-                      width: "100%",
-                      background: "rgba(11, 15, 25, 0.6)",
-                      border: "1px solid var(--border-light)",
-                      borderRadius: "10px",
-                      color: "#fff",
-                      padding: "0.6rem 0.75rem",
-                      fontSize: "0.85rem",
-                      outline: "none"
-                    }}
-                  >
-                    {sampleQuestions.map((q) => (
-                      <option key={q} value={q} style={{ background: "var(--bg-secondary)" }}>{q}</option>
-                    ))}
-                  </select>
-                  
-                  <button 
-                    className={styles.aiSendBtn} 
-                    onClick={handleFetchExplanation}
-                    disabled={loadingExplanation}
-                    style={{ marginTop: "0.25rem" }}
-                  >
-                    {loadingExplanation ? "Generating..." : "Get AI Explanation"}
-                  </button>
-
-                  {explanation && (
-                    <div 
-                      style={{ 
-                        marginTop: "0.75rem", 
-                        padding: "1rem", 
-                        background: "rgba(11, 15, 25, 0.4)", 
-                        border: "1px solid rgba(255,255,255,0.06)", 
-                        borderRadius: "12px", 
-                        fontSize: "0.85rem", 
-                        color: "var(--text-primary)", 
-                        lineHeight: 1.5,
-                        whiteSpace: "pre-wrap"
-                      }}
-                    >
-                      {explanation}
-                    </div>
-                  )}
                 </div>
               </div>
             </div>

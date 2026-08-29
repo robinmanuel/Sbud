@@ -455,7 +455,7 @@ function AssistantWorkspaceContent() {
       
       const localAiMsg: ChatMessage = {
         role: "assistant",
-        content: data.response,
+        content: data.reply,
         created_at: new Date().toISOString()
       };
       setGeneralChatMessages((prev) => [...prev, localAiMsg]);
