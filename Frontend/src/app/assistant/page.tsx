@@ -468,53 +468,138 @@ function AssistantWorkspaceContent() {
 
   return (
     <div className={styles.container}>
-      {isGeneralChat ? (
-        // General AI Chatbot Workspace
+      {activeDocId === null ? (
+        // Landing View: Left is study setup options, Right is General Tutor Chat
         <>
           <div className={styles.header}>
             <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-              <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>Interactive AI Tutor</span>
-              <h1 className={styles.docTitle}>SBud AI Tutor</h1>
+              <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>SBud Assistant</span>
+              <h1 className={styles.docTitle}>AI Learning Tutor</h1>
             </div>
-            <button className={styles.backBtn} onClick={() => setIsGeneralChat(false)}>
-              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" style={{ width: "16px", height: "16px" }}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" />
-              </svg>
-              Back to Options
-            </button>
           </div>
           
           <div className={styles.workspace}>
-            {/* Left Column: SBud general info */}
+            {/* Left Column: Learning Setup Options */}
             <div className={styles.viewerCard}>
               <div className={styles.viewerHeader}>
                 <h2 className={styles.viewerTitle}>
-                  💡 AI Study Companion
+                  What do you want to learn?
                 </h2>
               </div>
-              <div className={styles.textContent} style={{ fontSize: "0.95rem" }}>
-                <p style={{ marginBottom: "1.25rem" }}>
-                  Welcome! You can ask SBud anything you're studying. SBud AI Tutor is trained to:
-                </p>
-                <ul style={{ display: "flex", flexDirection: "column", gap: "0.6rem", paddingLeft: "1.25rem", color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                  <li>Explain complex academic concepts.</li>
-                  <li>Solve and explain math/science problems step-by-step.</li>
-                  <li>Decompose topics into digestible explanations.</li>
-                  <li>Draft review questions or check understanding.</li>
-                </ul>
-                <p style={{ marginTop: "2rem", color: "var(--text-muted)", fontStyle: "italic", fontSize: "0.85rem" }}>
-                  Note: If you want SBud to answer questions based on a specific textbook, syllabus PDF, or notes, select it from your library or upload it in the entry dashboard.
-                </p>
+              <div className={styles.textContent} style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
+                {error && (
+                  <div style={{ padding: "0.75rem 1rem", backgroundColor: "rgba(239,68,68,0.1)", border: "1px solid var(--danger)", borderRadius: "10px", color: "var(--danger)", fontSize: "0.85rem" }}>
+                    {error}
+                  </div>
+                )}
+
+                {/* 1. Search Curriculum */}
+                <form onSubmit={handleCustomSearch} style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                  <label style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--text-primary)" }}>AI Curriculum Search</label>
+                  <div style={{ display: "flex", background: "rgba(11, 15, 25, 0.5)", border: "1px solid var(--border-light)", borderRadius: "12px", padding: "0.25rem" }}>
+                    <input
+                      type="text"
+                      placeholder="e.g. Newtonian Mechanics, Cellular Respiration..."
+                      className={styles.inputField}
+                      style={{ border: "none", margin: 0, background: "transparent", fontSize: "0.85rem" }}
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                    <button type="submit" className={styles.submitBtn} style={{ borderRadius: "10px", padding: "0.5rem 1rem", fontSize: "0.85rem" }}>
+                      Generate
+                    </button>
+                  </div>
+                </form>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "1rem", color: "var(--text-muted)", fontSize: "0.85rem" }}>
+                  <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
+                  <span>OR</span>
+                  <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
+                </div>
+
+                {/* 2. Select Library Dropdown */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                  <label style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--text-primary)" }}>Select from your Library</label>
+                  <select
+                    onChange={(e) => { if (e.target.value) router.push(`/assistant?docId=${e.target.value}`); }}
+                    className={styles.inputField}
+                    style={{ width: "100%", margin: 0, padding: "0.75rem 1rem", background: "rgba(11, 15, 25, 0.5)", border: "1px solid var(--border-light)", borderRadius: "12px", color: "#fff", fontSize: "0.85rem", outline: "none" }}
+                  >
+                    <option value="" style={{ background: "var(--bg-secondary)" }}>-- Choose a previously uploaded document --</option>
+                    {documents.map((doc) => (
+                      <option key={doc.id} value={doc.id} style={{ background: "var(--bg-secondary)" }}>
+                        {doc.filename.startsWith("Custom Curriculum: ") 
+                          ? doc.filename.replace("Custom Curriculum: ", "").replace(".pdf", "")
+                          : doc.filename
+                        }
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "1rem", color: "var(--text-muted)", fontSize: "0.85rem" }}>
+                  <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
+                  <span>OR</span>
+                  <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
+                </div>
+
+                {/* 3. Upload Document */}
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                  <label style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--text-primary)" }}>Upload Study Guide</label>
+                  <div
+                    onClick={triggerFileInput}
+                    style={{
+                      border: "2px dashed var(--border-light)",
+                      borderRadius: "12px",
+                      padding: "1.5rem 1rem",
+                      textAlign: "center",
+                      cursor: "pointer",
+                      transition: "all 0.2s",
+                      background: "rgba(255,255,255,0.01)"
+                    }}
+                    onMouseOver={(e) => e.currentTarget.style.borderColor = "var(--border-active)"}
+                    onMouseOut={(e) => e.currentTarget.style.borderColor = "var(--border-light)"}
+                  >
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      onChange={handleFileUpload}
+                      accept="application/pdf"
+                      style={{ display: "none" }}
+                    />
+                    {isUploading ? (
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.5rem" }}>
+                        <div className={styles.spinner} style={{ width: "20px", height: "20px" }} />
+                        <span style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>Uploading PDF...</span>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.5rem" }}>
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" style={{ width: "28px", height: "28px", color: "var(--text-muted)" }}>
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z" />
+                        </svg>
+                        <span style={{ fontSize: "0.8rem", fontWeight: 600 }}>Select PDF Document</span>
+                      </div>
+                    )}
+                  </div>
+                  {fileError && (
+                    <p style={{ color: "var(--danger)", fontSize: "0.75rem", marginTop: "0.25rem", textAlign: "center" }}>{fileError}</p>
+                  )}
+                </div>
               </div>
             </div>
 
-            {/* Right Column: Chat area */}
+            {/* Right Column: SBud General Chatbot */}
             <div className={styles.studyCard}>
+              <div className={styles.studyHeader}>
+                <h2 className={styles.studyTitle} style={{ background: "var(--accent-gradient)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent" }}>
+                  🤖 General AI Tutor
+                </h2>
+              </div>
               <div className={styles.chatContainer}>
-                <div className={styles.chatHistory}>
+                <div className={styles.chatHistory} style={{ height: "280px" }}>
                   {generalChatMessages.length === 0 ? (
                     <div className={styles.emptyState} style={{ margin: "auto" }}>
-                      Ask any study question to start learning.
+                      Ask me any study question to start learning.
                     </div>
                   ) : (
                     generalChatMessages.map((msg, idx) => (
@@ -552,144 +637,6 @@ function AssistantWorkspaceContent() {
             </div>
           </div>
         </>
-      ) : activeDocId === null ? (
-        // Experience Entry state: Search query, Library selector, PDF upload, or General Tutor Chat
-        <div style={{ display: "flex", flexDirection: "column", gap: "2.5rem", maxWidth: "600px", margin: "3rem auto 0 auto" }}>
-          <div style={{ textAlign: "center" }}>
-            <h1 style={{ fontSize: "2.2rem", fontWeight: 800, background: "var(--accent-gradient)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: "0.5rem" }}>
-              What do you want to learn?
-            </h1>
-            <p style={{ color: "var(--text-secondary)", fontSize: "0.95rem" }}>
-              Enter any topic curriculum, select from library, or upload your document.
-            </p>
-          </div>
-
-          {error && (
-            <div style={{ padding: "1rem", backgroundColor: "rgba(239,68,68,0.1)", border: "1px solid var(--danger)", borderRadius: "12px", color: "var(--danger)", fontSize: "0.85rem" }}>
-              {error}
-            </div>
-          )}
-
-          {/* Search form query */}
-          <form onSubmit={handleCustomSearch} className={styles.panelCard} style={{ background: "var(--glass-bg)", border: "1px solid var(--glass-border)", padding: "1.5rem" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-              <label style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--text-primary)" }}>AI Curriculum Search</label>
-              <div style={{ display: "flex", background: "rgba(11, 15, 25, 0.5)", border: "1px solid var(--border-light)", borderRadius: "12px", padding: "0.25rem" }}>
-                <input
-                  type="text"
-                  placeholder="Syllabus topic e.g. Newtonian Mechanics, Organic Chemistry..."
-                  className={styles.inputField}
-                  style={{ border: "none", margin: 0, background: "transparent" }}
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-                <button type="submit" className={styles.submitBtn} style={{ borderRadius: "10px" }}>
-                  Generate
-                </button>
-              </div>
-            </div>
-          </form>
-
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "1rem", color: "var(--text-muted)", fontSize: "0.85rem" }}>
-            <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
-            <span>OR</span>
-            <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
-          </div>
-
-          {/* Select from Library Dropdown */}
-          <div className={styles.panelCard} style={{ background: "var(--glass-bg)", border: "1px solid var(--glass-border)", padding: "1.5rem" }}>
-            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-              <label style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--text-primary)" }}>Select from your Library</label>
-              <select
-                onChange={(e) => { if (e.target.value) router.push(`/assistant?docId=${e.target.value}`); }}
-                className={styles.inputField}
-                style={{ width: "100%", margin: 0, padding: "0.75rem 1rem" }}
-              >
-                <option value="" style={{ background: "var(--bg-secondary)" }}>-- Choose a previously uploaded document --</option>
-                {documents.map((doc) => (
-                  <option key={doc.id} value={doc.id} style={{ background: "var(--bg-secondary)" }}>
-                    {doc.filename.startsWith("Custom Curriculum: ") 
-                      ? doc.filename.replace("Custom Curriculum: ", "").replace(".pdf", "")
-                      : doc.filename
-                  }
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "1rem", color: "var(--text-muted)", fontSize: "0.85rem" }}>
-            <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
-            <span>OR</span>
-            <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
-          </div>
-
-          {/* Material Uploader */}
-          <div className={styles.panelCard} style={{ background: "var(--glass-bg)", border: "1px solid var(--glass-border)", padding: "1.5rem" }}>
-            <h3 style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--text-primary)", marginBottom: "0.75rem" }}>Upload Study Guide</h3>
-            <div
-              onClick={triggerFileInput}
-              style={{
-                border: "2px dashed var(--border-light)",
-                borderRadius: "12px",
-                padding: "2rem 1.5rem",
-                textAlign: "center",
-                cursor: "pointer",
-                transition: "all 0.2s",
-                background: "rgba(255,255,255,0.01)"
-              }}
-              onMouseOver={(e) => e.currentTarget.style.borderColor = "var(--border-active)"}
-              onMouseOut={(e) => e.currentTarget.style.borderColor = "var(--border-light)"}
-            >
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleFileUpload}
-                accept="application/pdf"
-                style={{ display: "none" }}
-              />
-              {isUploading ? (
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.5rem" }}>
-                  <div className={styles.spinner} />
-                  <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>Uploading material PDF...</span>
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: "0.5rem" }}>
-                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" style={{ width: "32px", height: "32px", color: "var(--text-muted)" }}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 16.5V9.75m0 0 3 3m-3-3-3 3M6.75 19.5a4.5 4.5 0 0 1-1.41-8.775 5.25 5.25 0 0 1 10.233-2.33 3 3 0 0 1 3.758 3.848A3.752 3.752 0 0 1 18 19.5H6.75Z" />
-                  </svg>
-                  <span style={{ fontSize: "0.85rem", fontWeight: 600 }}>Select PDF Document</span>
-                </div>
-              )}
-            </div>
-            {fileError && (
-              <p style={{ color: "var(--danger)", fontSize: "0.75rem", marginTop: "0.5rem", textAlign: "center" }}>{fileError}</p>
-            )}
-          </div>
-
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "1rem", color: "var(--text-muted)", fontSize: "0.85rem" }}>
-            <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
-            <span>OR</span>
-            <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
-          </div>
-
-          {/* General AI Tutor Card */}
-          <div className={styles.panelCard} style={{ background: "var(--glass-bg)", border: "1px solid var(--glass-border)", padding: "1.5rem", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-            <h3 style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--text-primary)" }}>Chat with AI Tutor</h3>
-            <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>Ask SBud any homework, study topic, or conceptual question directly.</p>
-            <button 
-              className={styles.submitBtn} 
-              style={{ width: "100%", justifyContent: "center", display: "flex" }} 
-              onClick={() => {
-                setIsGeneralChat(true);
-                setGeneralChatMessages([]);
-                setGeneralConversationId(null);
-              }}
-            >
-              Start General Chat
-            </button>
-          </div>
-        </div>
       ) : (
         // Workspace Mode: Split pane study guide reading & topic action execution
         <>
