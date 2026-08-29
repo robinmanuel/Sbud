@@ -124,6 +124,32 @@ function AssistantWorkspaceContent() {
   const [chatInput, setChatInput] = useState<string>("");
   const chatBottomRef = useRef<HTMLDivElement>(null);
 
+  // Library lists & general chatbot states
+  const [documents, setDocuments] = useState<any[]>([]);
+  const [isGeneralChat, setIsGeneralChat] = useState<boolean>(false);
+  const [generalChatMessages, setGeneralChatMessages] = useState<ChatMessage[]>([]);
+  const [generalConversationId, setGeneralConversationId] = useState<number | null>(null);
+  const [loadingGeneralChat, setLoadingGeneralChat] = useState<boolean>(false);
+
+  // Fetch documents list on mount
+  useEffect(() => {
+    const loadDocs = async () => {
+      try {
+        const resp = await fetch(`${API_BASE}/documents`, {
+          method: "GET",
+          credentials: "include"
+        });
+        if (resp.ok) {
+          const docData = await resp.json();
+          setDocuments(docData);
+        }
+      } catch (e) {
+        console.warn("Failed to load documents in Assistant", e);
+      }
+    };
+    loadDocs();
+  }, []);
+
   // Parse deep-linked documents/topics on mount or params change
   useEffect(() => {
     if (docIdParam) {
@@ -131,7 +157,6 @@ function AssistantWorkspaceContent() {
       setActiveDocId(id);
       loadWorkspace(id);
     } else {
-      // Clear workspace if no docIdParam
       setActiveDocId(null);
       setDocument(null);
       setExtractedText("");
@@ -397,17 +422,145 @@ function AssistantWorkspaceContent() {
     }
   };
 
+  const handleSendGeneralChatMessage = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInput.trim()) return;
+
+    const currentInput = chatInput;
+    setChatInput("");
+
+    const localUserMsg: ChatMessage = {
+      role: "user",
+      content: currentInput,
+      created_at: new Date().toISOString()
+    };
+    setGeneralChatMessages((prev) => [...prev, localUserMsg]);
+    setLoadingGeneralChat(true);
+
+    try {
+      const resp = await fetch(`${API_BASE}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          messages: [...generalChatMessages, localUserMsg].map(m => ({ role: m.role, content: m.content })),
+          conversation_id: generalConversationId
+        })
+      });
+
+      if (!resp.ok) throw new Error("General tutor failed to reply.");
+      const data = await resp.json();
+      
+      setGeneralConversationId(data.conversation_id);
+      
+      const localAiMsg: ChatMessage = {
+        role: "assistant",
+        content: data.response,
+        created_at: new Date().toISOString()
+      };
+      setGeneralChatMessages((prev) => [...prev, localAiMsg]);
+    } catch (err: any) {
+      alert(err.message || "Tutor response failed.");
+    } finally {
+      setLoadingGeneralChat(false);
+    }
+  };
+
   return (
     <div className={styles.container}>
-      {activeDocId === null ? (
-        // Experience Entry state: Search query or PDF upload
-        <div style={{ display: "flex", flexDirection: "column", gap: "2.5rem", maxWidth: "600px", margin: "4rem auto 0 auto" }}>
+      {isGeneralChat ? (
+        // General AI Chatbot Workspace
+        <>
+          <div className={styles.header}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+              <span style={{ fontSize: "0.85rem", color: "var(--text-secondary)" }}>Interactive AI Tutor</span>
+              <h1 className={styles.docTitle}>SBud AI Tutor</h1>
+            </div>
+            <button className={styles.backBtn} onClick={() => setIsGeneralChat(false)}>
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" style={{ width: "16px", height: "16px" }}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 15 3 9m0 0 6-6M3 9h12a6 6 0 0 1 0 12h-3" />
+              </svg>
+              Back to Options
+            </button>
+          </div>
+          
+          <div className={styles.workspace}>
+            {/* Left Column: SBud general info */}
+            <div className={styles.viewerCard}>
+              <div className={styles.viewerHeader}>
+                <h2 className={styles.viewerTitle}>
+                  💡 AI Study Companion
+                </h2>
+              </div>
+              <div className={styles.textContent} style={{ fontSize: "0.95rem" }}>
+                <p style={{ marginBottom: "1.25rem" }}>
+                  Welcome! You can ask SBud anything you're studying. SBud AI Tutor is trained to:
+                </p>
+                <ul style={{ display: "flex", flexDirection: "column", gap: "0.6rem", paddingLeft: "1.25rem", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                  <li>Explain complex academic concepts.</li>
+                  <li>Solve and explain math/science problems step-by-step.</li>
+                  <li>Decompose topics into digestible explanations.</li>
+                  <li>Draft review questions or check understanding.</li>
+                </ul>
+                <p style={{ marginTop: "2rem", color: "var(--text-muted)", fontStyle: "italic", fontSize: "0.85rem" }}>
+                  Note: If you want SBud to answer questions based on a specific textbook, syllabus PDF, or notes, select it from your library or upload it in the entry dashboard.
+                </p>
+              </div>
+            </div>
+
+            {/* Right Column: Chat area */}
+            <div className={styles.studyCard}>
+              <div className={styles.chatContainer}>
+                <div className={styles.chatHistory}>
+                  {generalChatMessages.length === 0 ? (
+                    <div className={styles.emptyState} style={{ margin: "auto" }}>
+                      Ask any study question to start learning.
+                    </div>
+                  ) : (
+                    generalChatMessages.map((msg, idx) => (
+                      <div
+                        key={idx}
+                        className={`${styles.chatMessage} ${
+                          msg.role === "user" ? styles.chatMessageUser : styles.chatMessageAssistant
+                        }`}
+                      >
+                        {msg.content}
+                      </div>
+                    ))
+                  )}
+                  {loadingGeneralChat && (
+                    <div className={styles.chatMessage} style={{ alignSelf: "flex-start", background: "transparent", color: "var(--text-muted)" }}>
+                      SBud is thinking...
+                    </div>
+                  )}
+                  <div ref={chatBottomRef} />
+                </div>
+
+                <form onSubmit={handleSendGeneralChatMessage} className={styles.chatInputGroup}>
+                  <input
+                    type="text"
+                    placeholder="Ask SBud anything..."
+                    className={styles.chatInput}
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                  />
+                  <button type="submit" className={styles.chatSendBtn}>
+                    Send
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : activeDocId === null ? (
+        // Experience Entry state: Search query, Library selector, PDF upload, or General Tutor Chat
+        <div style={{ display: "flex", flexDirection: "column", gap: "2.5rem", maxWidth: "600px", margin: "3rem auto 0 auto" }}>
           <div style={{ textAlign: "center" }}>
             <h1 style={{ fontSize: "2.2rem", fontWeight: 800, background: "var(--accent-gradient)", WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent", marginBottom: "0.5rem" }}>
               What do you want to learn?
             </h1>
             <p style={{ color: "var(--text-secondary)", fontSize: "0.95rem" }}>
-              Enter any topic curriculum or upload your document to create your study workspace.
+              Enter any topic curriculum, select from library, or upload your document.
             </p>
           </div>
 
@@ -436,6 +589,34 @@ function AssistantWorkspaceContent() {
               </div>
             </div>
           </form>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "1rem", color: "var(--text-muted)", fontSize: "0.85rem" }}>
+            <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
+            <span>OR</span>
+            <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
+          </div>
+
+          {/* Select from Library Dropdown */}
+          <div className={styles.panelCard} style={{ background: "var(--glass-bg)", border: "1px solid var(--glass-border)", padding: "1.5rem" }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+              <label style={{ fontSize: "0.85rem", fontWeight: 700, color: "var(--text-primary)" }}>Select from your Library</label>
+              <select
+                onChange={(e) => { if (e.target.value) router.push(`/assistant?docId=${e.target.value}`); }}
+                className={styles.inputField}
+                style={{ width: "100%", margin: 0, padding: "0.75rem 1rem" }}
+              >
+                <option value="" style={{ background: "var(--bg-secondary)" }}>-- Choose a previously uploaded document --</option>
+                {documents.map((doc) => (
+                  <option key={doc.id} value={doc.id} style={{ background: "var(--bg-secondary)" }}>
+                    {doc.filename.startsWith("Custom Curriculum: ") 
+                      ? doc.filename.replace("Custom Curriculum: ", "").replace(".pdf", "")
+                      : doc.filename
+                  }
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "1rem", color: "var(--text-muted)", fontSize: "0.85rem" }}>
             <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
@@ -484,6 +665,29 @@ function AssistantWorkspaceContent() {
             {fileError && (
               <p style={{ color: "var(--danger)", fontSize: "0.75rem", marginTop: "0.5rem", textAlign: "center" }}>{fileError}</p>
             )}
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "1rem", color: "var(--text-muted)", fontSize: "0.85rem" }}>
+            <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
+            <span>OR</span>
+            <div style={{ height: "1px", background: "var(--border-light)", flex: 1 }} />
+          </div>
+
+          {/* General AI Tutor Card */}
+          <div className={styles.panelCard} style={{ background: "var(--glass-bg)", border: "1px solid var(--glass-border)", padding: "1.5rem", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            <h3 style={{ fontSize: "0.9rem", fontWeight: 700, color: "var(--text-primary)" }}>Chat with AI Tutor</h3>
+            <p style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>Ask SBud any homework, study topic, or conceptual question directly.</p>
+            <button 
+              className={styles.submitBtn} 
+              style={{ width: "100%", justifyContent: "center", display: "flex" }} 
+              onClick={() => {
+                setIsGeneralChat(true);
+                setGeneralChatMessages([]);
+                setGeneralConversationId(null);
+              }}
+            >
+              Start General Chat
+            </button>
           </div>
         </div>
       ) : (
