@@ -8,6 +8,7 @@ import json
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import google.generativeai as genai
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.schemas import ChatRequest, ChatResponse
@@ -734,6 +735,8 @@ def list_documents(
         models.Document.user_id == current_user.id
     ).order_by(models.Document.created_at.desc()).all()
 
+
+
 @app.delete("/documents/{document_id}", tags=["Documents"])
 def delete_document(
     document_id: int,
@@ -1332,7 +1335,7 @@ def delete_learning_goal(
 # =====================================================================
 
 @app.get("/documents/{document_id}", response_model=schemas.DocumentWorkspaceResponse, tags=["Documents Workspace"])
-def get_document_workspace(
+async def get_document_workspace(
     document_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
@@ -1346,6 +1349,22 @@ def get_document_workspace(
     ).first()
     if not db_doc:
         raise HTTPException(status_code=404, detail="Document not found")
+
+    if not db_doc.topics:
+        try:
+            from app.ai_service import AIService
+            topic_names = await AIService.generate_topics(db_doc.extracted_text, current_user.id, db)
+            for name in topic_names:
+                db_topic = models.Topic(
+                    document_id=db_doc.id,
+                    name=name
+                )
+                db.add(db_topic)
+            db.commit()
+            db.refresh(db_doc)
+        except Exception as e:
+            print(f"WARNING: Dynamic topic generation failed: {e}")
+
     return db_doc
 
 
@@ -1364,7 +1383,7 @@ def get_document_text(
     ).first()
     if not db_doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    return {"text": db_doc.extracted_text or "No text content available."}
+    return {"text": db_doc.extracted_text or ""}
 
 
 @app.post("/topics/{topic_id}/learn", response_model=schemas.LessonDetailResponse, tags=["Topic Actions"])
